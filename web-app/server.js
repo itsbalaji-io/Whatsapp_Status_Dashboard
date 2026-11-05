@@ -3,6 +3,8 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const bcrypt = require('bcryptjs');
+const session = require('express-session');
 const qrcode = require('qrcode');
 
 const app = express();
@@ -22,8 +24,233 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+// ==================== AUTH SYSTEM ====================
+
+const SESSION_SECRET = process.env.SESSION_SECRET || OPENWA_API_KEY || 'default-secret-change-me';
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+
+// In-memory user store: { id: { id, username, passwordHash, role, createdAt } }
+const users = new Map();
+let nextUserId = 1;
+
+// Load users from disk if present
+function loadUsers() {
+  try {
+    if (fs.existsSync(USERS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+      if (Array.isArray(data)) {
+        for (const u of data) {
+          users.set(u.id, u);
+          if (u.id > nextUserId) nextUserId = u.id + 1;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load users:', e.message);
+  }
+}
+
+function saveUsers() {
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(Array.from(users.values()), null, 2));
+  } catch (e) {
+    console.error('Failed to save users:', e.message);
+  }
+}
+
+// Ensure the admin account exists on every boot.
+// Username: admin  |  Password: your OpenWA API key (OPENWA_API_KEY env)
+// If admin already exists but its password hash doesn't match the current OPENWA_API_KEY,
+// the hash is updated so you can always log in with your current API key.
+function bootstrapAdmin() {
+  const adminPassword = process.env.OPENWA_API_KEY || 'trust-me-bro-this-is-ultra-secure-key';
+  const adminExists = Array.from(users.values()).some(u => u.role === 'admin');
+
+  if (adminExists) {
+    // Verify admin's password hash matches the current OpenWA API key; update if stale
+    for (const u of users.values()) {
+      if (u.role === 'admin') {
+        const valid = bcrypt.compareSync(adminPassword, u.passwordHash);
+        if (!valid) {
+          u.passwordHash = bcrypt.hashSync(adminPassword, 10);
+          saveUsers();
+          console.log('[Auth] Admin password hash refreshed to match current OPENWA_API_KEY');
+        }
+        return;
+      }
+    }
+  }
+
+  const passwordHash = bcrypt.hashSync(adminPassword, 10);
+  const adminUser = {
+    id: nextUserId++,
+    username: 'admin',
+    passwordHash,
+    role: 'admin',
+    createdAt: new Date().toISOString(),
+  };
+  users.set(adminUser.id, adminUser);
+  saveUsers();
+  console.log('[Auth] Admin account created: username=admin, password=your OpenWA API key');
+}
+
+loadUsers();
+bootstrapAdmin();
+
+// Session middleware
+app.use(
+  session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: false, // set true behind HTTPS
+      sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    },
+    name: 'openwa_dashboard_session',
+  })
+);
+
+// Auth helper: require authenticated user
+function requireAuth(req, res, next) {
+  if (!req.session.userId) {
+    return res.status(401).json({ error: 'Unauthorized: please log in' });
+  }
+  next();
+}
+
+// Auth helper: require admin role
+function requireAdmin(req, res, next) {
+  const user = users.get(req.session.userId);
+  if (!user || user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: admin only' });
+  }
+  next();
+}
+
+// Get current user (without password hash)
+function getPublicUser(user) {
+  if (!user) return null;
+  return { id: user.id, username: user.username, role: user.role, createdAt: user.createdAt };
+}
+
+// ==================== AUTH ROUTES ====================
+
+// Login
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password required' });
+    }
+
+    const user = Array.from(users.values()).find(u => u.username === username);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const valid = bcrypt.compareSync(password, user.passwordHash);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    req.session.userId = user.id;
+    req.session.userRole = user.role;
+    return res.json({ success: true, user: getPublicUser(user) });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Logout
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie('openwa_dashboard_session');
+    return res.json({ success: true });
+  });
+});
+
+// Get current session user
+app.get('/api/auth/me', (req, res) => {
+  if (!req.session.userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+  const user = users.get(req.session.userId);
+  if (!user) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+  return res.json({ user: getPublicUser(user) });
+});
+
+// Admin: list users (no password hashes)
+app.get('/api/auth/users', requireAuth, requireAdmin, (req, res) => {
+  const list = Array.from(users.values()).map(getPublicUser);
+  return res.json({ users: list });
+});
+
+// Admin: create a new user
+app.post('/api/auth/users', requireAuth, requireAdmin, (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password required' });
+    }
+
+    if (Array.from(users.values()).some(u => u.username === username)) {
+      return res.status(409).json({ error: 'Username already exists' });
+    }
+
+    const passwordHash = bcrypt.hashSync(password, 10);
+    const newUser = {
+      id: nextUserId++,
+      username,
+      passwordHash,
+      role: 'user',
+      createdAt: new Date().toISOString(),
+    };
+    users.set(newUser.id, newUser);
+    saveUsers();
+
+    return res.json({ success: true, user: getPublicUser(newUser) });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: delete a user
+app.delete('/api/auth/users/:id', requireAuth, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const user = users.get(id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.role === 'admin') return res.status(403).json({ error: 'Cannot delete admin' });
+  users.delete(id);
+  saveUsers();
+  return res.json({ success: true });
+});
+
+// ==================== PROTECT ALL OTHER API ROUTES ====================
+
+// All /api/* routes (except /api/auth/*) require authentication
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/api/auth/')) return next();
+  if (!req.session.userId) {
+    return res.status(401).json({ error: 'Unauthorized: please log in' });
+  }
+  next();
+});
+
+// ==================== LOGIN PAGE ROUTE ====================
+// Placed before the catch-all SPA fallback (defined at end of file)
+
+app.get('/login', (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -839,6 +1066,53 @@ app.get('/api/history', (req, res) => {
   });
 });
 
+// Export broadcast history as CSV or JSON
+app.get('/api/history/export', (req, res) => {
+  try {
+    const format = (req.query.format || 'csv').toLowerCase();
+    const items = historyStore.items;
+
+    if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="whatsapp-status-history-${new Date().toISOString().slice(0, 10)}.json"`);
+      return res.json(items);
+    }
+
+    // Default: CSV
+    const headers = ['id', 'createdAt', 'fileName', 'caption', 'status', 'scheduledFor', 'targetSessionIds', 'sessionResults'];
+    const rows = items.map(item => {
+      const sessionResults = (item.sessionResults || []).map(sr => `${sr.sessionId}:${sr.status}`).join('; ');
+      return [
+        item.id || '',
+        item.createdAt || '',
+        (item.fileName || '').replace(/"/g, '""'),
+        (item.caption || '').replace(/"/g, '""'),
+        item.status || '',
+        item.scheduledFor || '',
+        (item.targetSessionIds || []).join(', '),
+        sessionResults.replace(/"/g, '""')
+      ];
+    });
+
+    const csvLines = [
+      headers.join(','),
+      ...rows.map(row => row.map(field => {
+        const str = String(field);
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      }).join(','))
+    ];
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="whatsapp-status-history-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(csvLines.join('\n'));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/history/:id/revoke', async (req, res) => {
   try {
     const item = historyStore.items.find(i => i.id === req.params.id);
@@ -915,14 +1189,18 @@ app.post('/api/fingerprint', (req, res) => {
   res.json({ fingerprint: fp, activeSessions });
 });
 
-// SPA fallback
+// SPA fallback — requires authentication (except /login which is handled above)
 app.get('*', (req, res) => {
+  if (!req.session.userId) return res.redirect('/login');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Start Server
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 WhatsApp Status Web App running on port ${PORT}`);
+// Start Server — bind to all interfaces so colleagues on the same LAN can access
+// via computer name (e.g. http://TALLYSERVER-PC:3000) instead of your IP address.
+const DASHBOARD_BIND_HOST = process.env.BIND_HOST || '0.0.0.0';
+app.listen(PORT, DASHBOARD_BIND_HOST, () => {
+  console.log(`🚀 WhatsApp Status Web App running on ${DASHBOARD_BIND_HOST}:${PORT}`);
   console.log(`🔗 Connected OpenWA Gateway: ${OPENWA_BASE_URL}`);
   console.log(`📁 History storage: ${HISTORY_FILE}`);
+  console.log(`🌐 Share this URL with colleagues: http://TALLYSERVER-PC:${PORT}`);
 });

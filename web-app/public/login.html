@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login - WhatsApp Status Hub</title>
+  <link rel="stylesheet" href="/app.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📱</text></svg>" />
+  <style>
+    .login-page {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: var(--bg-primary);
+    }
+    .login-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 40px 32px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: var(--shadow-lg);
+    }
+    .login-header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .login-icon {
+      width: 48px;
+      height: 48px;
+      background: linear-gradient(135deg, #25d366 0%, #128c7e 100%);
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      font-size: 1.5rem;
+    }
+    .login-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+    .login-subtitle {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+    .form-input {
+      width: 100%;
+      background-color: var(--bg-input);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      padding: 10px 14px;
+      font-size: 0.9rem;
+      outline: none;
+      box-sizing: border-box;
+    }
+    .form-input:focus {
+      border-color: var(--accent-wa);
+    }
+    .form-input::placeholder {
+      color: var(--text-muted);
+    }
+    .login-btn {
+      width: 100%;
+      background: linear-gradient(135deg, #25d366 0%, #128c7e 100%);
+      color: white;
+      border: none;
+      border-radius: var(--radius-md);
+      padding: 12px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 8px;
+      box-shadow: 0 4px 14px var(--accent-wa-glow);
+      transition: var(--transition);
+    }
+    .login-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px var(--accent-wa-glow);
+    }
+    .login-btn:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .error-msg {
+      color: var(--accent-red);
+      font-size: 0.82rem;
+      margin-top: 12px;
+      text-align: center;
+      display: none;
+    }
+    .admin-hint {
+      margin-top: 24px;
+      padding: 14px;
+      background-color: rgba(37, 211, 102, 0.08);
+      border: 1px solid rgba(37, 211, 102, 0.2);
+      border-radius: var(--radius-md);
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    .admin-hint b { color: var(--accent-wa); }
+  </style>
+</head>
+<body>
+  <div class="login-page">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="login-icon">📱</div>
+        <div class="login-title">WhatsApp Status Hub</div>
+        <div class="login-subtitle">Sign in to manage your WhatsApp accounts</div>
+      </div>
+
+      <form id="loginForm">
+        <div class="form-group">
+          <label class="form-label" for="username">Username</label>
+          <input type="text" class="form-input" id="username" placeholder="e.g. admin" autocomplete="username" />
+        </div>
+        <div class="form-group" style="position: relative;">
+          <label class="form-label" for="password">Password</label>
+          <input type="password" class="form-input" id="password" placeholder="••••••••" autocomplete="current-password" />
+          <button type="button" id="toggleLoginPassword" style="position: absolute; right: 10px; top: 34px; background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 4px; font-size: 1rem;">👁️</button>
+        </div>
+        <button type="submit" class="login-btn" id="loginBtn">Sign In</button>
+        <div class="error-msg" id="loginError">Invalid username or password</div>
+      </form>
+
+      <div class="admin-hint">
+        <b>Admin account:</b> username <b>admin</b>, password is your OpenWA API key.<br />
+        Only the admin can add new users from the dashboard.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Password show/hide toggle
+    const toggleLoginPassword = document.getElementById('toggleLoginPassword');
+    const passwordInput = document.getElementById('password');
+    let loginPasswordVisible = false;
+
+    toggleLoginPassword.addEventListener('click', () => {
+      loginPasswordVisible = !loginPasswordVisible;
+      passwordInput.type = loginPasswordVisible ? 'text' : 'password';
+      toggleLoginPassword.textContent = loginPasswordVisible ? '🙈' : '👁️';
+    });
+
+    const form = document.getElementById('loginForm');
+    const btn = document.getElementById('loginBtn');
+    const error = document.getElementById('loginError');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+
+      btn.disabled = true;
+      error.style.display = 'none';
+      btn.textContent = 'Signing in...';
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+          window.location.href = '/';
+        } else {
+          error.textContent = data.error || 'Invalid username or password';
+          error.style.display = 'block';
+          btn.disabled = false;
+          btn.textContent = 'Sign In';
+        }
+      } catch (err) {
+        error.textContent = 'Connection error. Is the server running?';
+        error.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+      }
+    });
+  </script>
+</body>
+</html>

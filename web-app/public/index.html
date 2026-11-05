@@ -22,13 +22,16 @@
         </div>
       </div>
 
-      <div class="header-status-group">
+      <div class="header-status-group" id="headerStatusGroup">
         <div class="status-badge" id="headerGatewayBadge" title="Click to view sessions & QR">
           <span class="status-dot" id="headerGatewayDot"></span>
           <span id="headerGatewayText">Connecting...</span>
         </div>
         <button class="refresh-btn" id="btnRefreshAll" title="Refresh all sessions and live statuses">
           🔄 Refresh
+        </button>
+        <button class="btn-theme-toggle" id="btnThemeToggle" title="Toggle Light / Dark Mode" aria-label="Toggle theme">
+          <span id="themeToggleIcon">🌙</span>
         </button>
       </div>
     </div>
@@ -59,11 +62,12 @@
 
         <!-- Left Column: Media & Caption -->
         <div>
-          <div class="card">
-            <div class="card-title">
-              <span>📸 Media & Content</span>
-              <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-secondary);">Image or Video</span>
-            </div>
+          <div class="card media-content-card">
+            <div class="card-body">
+              <div class="card-title">
+                <span>📸 Media & Content</span>
+                <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-secondary);">Image or Video</span>
+              </div>
 
             <!-- Media Drop Zone -->
             <div class="drop-zone" id="dropZone">
@@ -104,16 +108,18 @@
               </div>
             </div>
 
+              </div>
+            </div>
           </div>
-        </div>
 
         <!-- Right Column: Target Selector & Push Action -->
         <div>
-          <div class="card target-selector">
-            <div class="card-title">
-              <span>🎯 Target Accounts</span>
-              <span id="targetSelectedCountLabel" style="font-size: 0.8rem; font-weight: 600; color: var(--text-secondary);">(0 ready selected)</span>
-            </div>
+          <div class="card target-accounts-card">
+            <div class="card-body">
+              <div class="card-title">
+                <span>🎯 Target Accounts</span>
+                <span id="targetSelectedCountLabel" style="font-size: 0.8rem; font-weight: 600; color: var(--text-secondary);">(0 ready selected)</span>
+              </div>
 
             <div class="target-header-bar">
               <input type="text" class="target-search-input" id="targetSearchInput" placeholder="🔍 Filter 23 accounts..." />
@@ -222,6 +228,9 @@
           <div class="btn-group">
             <input type="text" class="target-search-input" id="historySearchInput" placeholder="🔍 Search history..." style="width: 200px;" />
             <button class="btn-secondary" id="btnClearHistory" style="color: var(--accent-red);">🗑️ Clear All</button>
+            <button class="btn-export" id="btnExportHistory" title="Export broadcast history">
+              📥 Export
+            </button>
           </div>
         </div>
 

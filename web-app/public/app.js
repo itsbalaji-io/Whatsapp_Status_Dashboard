@@ -1,5 +1,40 @@
 // WhatsApp Status Enterprise Web Hub - Client Application
 
+// ==================== AUTH FETCH WRAPPER ====================
+// Ensure all /api/ fetch calls send session cookies
+const _originalFetch = window.fetch;
+window.fetch = async (input, init = {}) => {
+  const url = typeof input === 'string' ? input : input.url;
+  if (typeof url === 'string' && url.startsWith('/api/')) {
+    init.credentials = 'include';
+  }
+  return _originalFetch(input, init);
+};
+
+// ==================== AUTH STATE ====================
+let currentUser = null;
+
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/auth/me');
+    if (res.ok) {
+      const data = await res.json();
+      currentUser = data.user;
+      return true;
+    }
+  } catch (e) {
+    // ignore
+  }
+  currentUser = null;
+  return false;
+}
+
+function requireAuth() {
+  if (!currentUser) {
+    window.location.href = '/login';
+  }
+}
+
 // MARK: - State
 const state = {
   sessions: [],
@@ -125,13 +160,22 @@ function showToast(message, type = 'info') {
 }
 
 // MARK: - Initializer & Tab Routing
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  const authenticated = await checkAuth();
+  if (!authenticated) {
+    window.location.href = '/login';
+    return;
+  }
+
   setupTabs();
   setupComposer();
   setupSessions();
   setupHistory();
   setupLiveStatuses();
   setupModals();
+  setupThemeToggle();
+  setupExportHistory();
+  setupAuthUI();
 
   // Initial load
   refreshAllData();
@@ -1061,6 +1105,302 @@ function setupHistory() {
     showToast('Broadcast history cleared', 'info');
   });
 }
+
+// MARK: - Theme Toggle (Dark / Light Mode)
+
+function setupThemeToggle() {
+  const btn = document.getElementById('btnThemeToggle');
+  const icon = document.getElementById('themeToggleIcon');
+  const saved = localStorage.getItem('openwa_theme');
+
+  // Apply saved theme or default to dark
+  if (saved === 'light') {
+    enableLightMode();
+  } else {
+    disableLightMode();
+  }
+
+  btn.addEventListener('click', () => {
+    if (document.body.classList.contains('light-theme')) {
+      disableLightMode();
+      localStorage.setItem('openwa_theme', 'dark');
+    } else {
+      enableLightMode();
+      localStorage.setItem('openwa_theme', 'light');
+    }
+  });
+}
+
+function enableLightMode() {
+  document.body.classList.add('light-theme');
+  document.getElementById('themeToggleIcon').textContent = '☀️';
+}
+
+function disableLightMode() {
+  document.body.classList.remove('light-theme');
+  document.getElementById('themeToggleIcon').textContent = '🌙';
+}
+
+// MARK: - Export Broadcast History (CSV / JSON)
+
+function setupExportHistory() {
+  document.getElementById('btnExportHistory').addEventListener('click', () => {
+    const format = prompt('Export format? Type "csv" or "json"', 'csv');
+    if (!format) return;
+    exportHistory(format.trim().toLowerCase());
+  });
+}
+
+async function exportHistory(format = 'csv') {
+  try {
+    const res = await fetch(`/api/history/export?format=${format}`);
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ext = format === 'json' ? 'json' : 'csv';
+    const mime = format === 'json' ? 'application/json' : 'text/csv';
+    a.href = url;
+    a.download = `whatsapp-status-history-${new Date().toISOString().slice(0, 10)}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`History exported as ${format.toUpperCase()}`, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+    console.error('Export history failed:', err);
+  }
+}
+
+// MARK: - Auth UI (user display, logout, manage users)
+
+function setupAuthUI() {
+  const headerStatus = document.getElementById('headerStatusGroup');
+  if (!headerStatus) return;
+
+  const userInfo = document.createElement('div');
+  userInfo.style.display = 'flex';
+  userInfo.style.alignItems = 'center';
+  userInfo.style.gap = '10px';
+  userInfo.style.marginLeft = '12px';
+  userInfo.style.padding = '6px 12px';
+  userInfo.style.background = 'var(--bg-input)';
+  userInfo.style.border = '1px solid var(--border-color)';
+  userInfo.style.borderRadius = '20px';
+  userInfo.style.fontSize = '0.82rem';
+  userInfo.style.fontWeight = '600';
+  userInfo.style.color = 'var(--text-secondary)';
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  userInfo.innerHTML = `
+    <span id="authUserDisplay">${currentUser ? currentUser.username : 'User'} (${currentUser ? currentUser.role : ''})</span>
+    ${isAdmin ? `<button type="button" id="btnManageUsers" style="background:none;border:none;color:var(--accent-blue);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:0.8rem;">👥 Users</button>` : ''}
+    <button type="button" id="btnLogout" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:0.8rem;">Logout</button>
+  `;
+  headerStatus.appendChild(userInfo);
+
+  document.getElementById('btnLogout').addEventListener('click', async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch (e) {
+      // ignore
+    }
+    currentUser = null;
+    window.location.href = '/login';
+  });
+
+  if (isAdmin) {
+    document.getElementById('btnManageUsers').addEventListener('click', () => {
+      openUsersModal();
+    });
+  }
+}
+
+// ==================== USERS MANAGEMENT MODAL (ADMIN ONLY) ====================
+
+let usersModal = null;
+let usersListEl = null;
+let addUserFormEl = null;
+let addUserMsgEl = null;
+
+function openUsersModal() {
+  // Create modal if not exists
+  if (!usersModal) {
+    const modalHtml = `
+      <div class="modal-backdrop" id="usersModal">
+        <div class="modal-content" style="max-width: 520px;">
+          <div class="modal-header">
+            <div class="modal-title">Manage Users</div>
+            <button class="btn-close-modal" id="btnCloseUsersModal">✕</button>
+          </div>
+          <div class="modal-body" style="max-height: 400px; overflow-y: auto;">
+            <div style="margin-bottom: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <strong style="font-size: 0.85rem; color: var(--text-secondary); text-transform: uppercase;">Registered Users</strong>
+                <span id="usersCountBadge" style="background: var(--bg-input); color: var(--accent-wa); padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 700;">0</span>
+              </div>
+              <div id="usersListContainer" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            </div>
+            <hr style="border: none; border-top: 1px solid var(--border-color); margin: 20px 0;" />
+            <div class="add-user-card">
+              <div class="section-header">
+                <span class="section-icon">👤</span>
+                <span class="section-title">Add New User</span>
+              </div>
+              <form id="addUserForm" class="add-user-form" style="display: flex; flex-direction: column; gap: 14px;">
+                <div class="form-group">
+                  <label class="form-label" for="newUserUsername">Username</label>
+                  <div class="input-wrapper">
+                    <span class="input-icon">🏷️</span>
+                    <input type="text" class="form-input" id="newUserUsername" placeholder="e.g. operator" autocomplete="off" />
+                  </div>
+                  <span class="field-hint">Unique login name for this user</span>
+                </div>
+                <div class="form-group" style="position: relative;">
+                  <label class="form-label" for="newUserPassword">Password</label>
+                  <div class="input-wrapper">
+                    <span class="input-icon">🔒</span>
+                    <input type="password" class="form-input" id="newUserPassword" placeholder="••••••••" />
+                    <button type="button" id="toggleNewUserPassword" class="password-toggle" aria-label="Toggle password visibility">👁️</button>
+                  </div>
+                  <span class="field-hint">Secure password for the new account</span>
+                </div>
+                <button type="submit" class="btn-add-user" id="btnAddUser">
+                  <span>➕</span> Create User
+                </button>
+              </form>
+              <div id="addUserMsg" class="action-msg" style="display: none;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    usersModal = document.getElementById('usersModal');
+    usersListEl = document.getElementById('usersListContainer');
+    addUserFormEl = document.getElementById('addUserForm');
+    addUserMsgEl = document.getElementById('addUserMsg');
+
+    document.getElementById('btnCloseUsersModal').addEventListener('click', closeUsersModal);
+    usersModal.addEventListener('click', (e) => {
+      if (e.target === usersModal) closeUsersModal();
+    });
+
+    // Password show/hide toggle for new user form
+    const toggleNewUserPassword = document.getElementById('toggleNewUserPassword');
+    const newUserPasswordInput = document.getElementById('newUserPassword');
+    let newUserPasswordVisible = false;
+    toggleNewUserPassword.addEventListener('click', () => {
+      newUserPasswordVisible = !newUserPasswordVisible;
+      newUserPasswordInput.type = newUserPasswordVisible ? 'text' : 'password';
+      toggleNewUserPassword.textContent = newUserPasswordVisible ? '🙈' : '👁️';
+    });
+
+    addUserFormEl.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('newUserUsername').value.trim();
+      const password = document.getElementById('newUserPassword').value;
+      if (!username || !password) {
+        showAddUserMsg('Username and password are required', 'error');
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showAddUserMsg(`User "${username}" added successfully!`, 'success');
+          addUserFormEl.reset();
+          loadUsersList();
+        } else {
+          showAddUserMsg(data.error || 'Failed to add user', 'error');
+        }
+      } catch (err) {
+        showAddUserMsg(err.message, 'error');
+      }
+    });
+  }
+
+  loadUsersList();
+  usersModal.classList.add('open');
+}
+
+function closeUsersModal() {
+  if (usersModal) usersModal.classList.remove('open');
+}
+
+async function loadUsersList() {
+  try {
+    const res = await fetch('/api/auth/users', { credentials: 'include' });
+    if (!res.ok) return;
+    const data = await res.json();
+    const users = data.users || [];
+    document.getElementById('usersCountBadge').textContent = users.length;
+
+    usersListEl.innerHTML = users.map(u => {
+      const isCurrentAdmin = u.username === 'admin' && u.role === 'admin';
+      return `
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); font-size: 0.85rem;">
+          <div>
+            <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(u.username)}</div>
+            <div style="font-size: 0.72rem; color: var(--text-muted);">ID: ${u.id} • Created: ${new Date(u.createdAt).toLocaleDateString()}</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span style="background: ${u.role === 'admin' ? 'rgba(37, 211, 102, 0.15)' : 'rgba(83, 189, 235, 0.15)'}; color: ${u.role === 'admin' ? 'var(--accent-wa)' : 'var(--accent-blue)'}; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;">${u.role}</span>
+            ${!isCurrentAdmin ? `<button type="button" class="btn-revoke" onclick="deleteUser(${u.id})" style="padding: 4px 8px; font-size: 0.75rem; margin-left: 6px;">🗑️</button>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('') || '<div style="padding: 12px; color: var(--text-muted); font-size: 0.85rem; text-align: center;">No users found.</div>';
+  } catch (e) {
+    console.error('Failed to load users:', e);
+  }
+}
+
+function showAddUserMsg(text, type) {
+  if (!addUserMsgEl) return;
+  addUserMsgEl.textContent = text;
+  addUserMsgEl.style.display = 'block';
+  addUserMsgEl.style.color = type === 'success' ? 'var(--accent-wa)' : 'var(--accent-red)';
+  addUserMsgEl.style.background = type === 'success' ? 'rgba(37, 211, 102, 0.1)' : 'rgba(234, 67, 53, 0.1)';
+  addUserMsgEl.style.padding = '6px 10px';
+  addUserMsgEl.style.borderRadius = 'var(--radius-sm)';
+  addUserMsgEl.style.border = `1px solid ${type === 'success' ? 'rgba(37, 211, 102, 0.3)' : 'rgba(234, 67, 53, 0.3)'}`;
+  setTimeout(() => { addUserMsgEl.style.display = 'none'; }, 4000);
+}
+
+async function deleteUser(userId) {
+  if (!confirm('Are you sure you want to delete this user?')) return;
+  try {
+    const res = await fetch(`/api/auth/users/${userId}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    if (res.ok) {
+      loadUsersList();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || 'Failed to delete user');
+    }
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Call closeUsersModal globally for inline onclick
+window.closeUsersModal = closeUsersModal;
+window.deleteUser = deleteUser;
 
 async function fetchHistory() {
   try {
