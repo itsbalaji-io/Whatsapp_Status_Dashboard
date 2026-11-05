@@ -62,22 +62,21 @@ function saveUsers() {
 }
 
 // Ensure the admin account exists on every boot.
-// Username: admin  |  Password: your OpenWA API key (OPENWA_API_KEY env)
-// If admin already exists but its password hash doesn't match the current OPENWA_API_KEY,
-// the hash is updated so you can always log in with your current API key.
+// Username: admin  |  Password: tallyantivirus123 (fixed admin password)
+// If admin already exists but its password hash doesn't match, it is updated to the fixed password.
 function bootstrapAdmin() {
-  const adminPassword = process.env.OPENWA_API_KEY || 'trust-me-bro-this-is-ultra-secure-key';
+  const adminPassword = 'tallyantivirus123';
   const adminExists = Array.from(users.values()).some(u => u.role === 'admin');
 
   if (adminExists) {
-    // Verify admin's password hash matches the current OpenWA API key; update if stale
+    // Verify admin's password hash matches the fixed password; update if stale
     for (const u of users.values()) {
       if (u.role === 'admin') {
         const valid = bcrypt.compareSync(adminPassword, u.passwordHash);
         if (!valid) {
           u.passwordHash = bcrypt.hashSync(adminPassword, 10);
           saveUsers();
-          console.log('[Auth] Admin password hash refreshed to match current OPENWA_API_KEY');
+          console.log('[Auth] Admin password hash refreshed to fixed password');
         }
         return;
       }
@@ -94,7 +93,7 @@ function bootstrapAdmin() {
   };
   users.set(adminUser.id, adminUser);
   saveUsers();
-  console.log('[Auth] Admin account created: username=admin, password=your OpenWA API key');
+  console.log('[Auth] Admin account created: username=admin, password=tallyantivirus123');
 }
 
 loadUsers();
