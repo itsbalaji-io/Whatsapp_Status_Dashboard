@@ -8,6 +8,7 @@ node_modules/
 # User data & secrets
 web-app/data/users.json
 web-app/data/history.json
+web-app/data/sessions.json
 web-app/data/*.sqlite
 
 # Logs

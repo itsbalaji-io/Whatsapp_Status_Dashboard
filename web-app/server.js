@@ -100,7 +100,8 @@ function bootstrapAdmin() {
 loadUsers();
 bootstrapAdmin();
 
-// Session middleware
+// Session middleware — in-memory store (sessions reset on server restart)
+// Cookie maxAge is 24 hours, so sessions persist during normal use.
 app.use(
   session({
     secret: SESSION_SECRET,
