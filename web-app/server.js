@@ -1189,6 +1189,107 @@ app.post('/api/fingerprint', (req, res) => {
   res.json({ fingerprint: fp, activeSessions });
 });
 
+// 7. Scheduled Broadcast Management
+// List all pending scheduled broadcasts
+app.get('/api/scheduled', (req, res) => {
+  try {
+    const scheduled = historyStore.items.filter(i => i.status === 'scheduled');
+    res.json({ items: scheduled });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancel a scheduled broadcast before it executes
+app.delete('/api/scheduled/:id', (req, res) => {
+  try {
+    const item = historyStore.items.find(i => i.id === req.params.id && i.status === 'scheduled');
+    if (!item) return res.status(404).json({ error: 'Scheduled broadcast not found' });
+    historyStore.remove(item.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retry only the failed session results of a history item
+app.post('/api/history/:id/retry-failed', async (req, res) => {
+  try {
+    const item = historyStore.items.find(i => i.id === req.params.id);
+    if (!item) return res.status(404).json({ error: 'History item not found' });
+
+    const failedResults = (item.sessionResults || []).filter(sr => sr.status === 'failed');
+    if (failedResults.length === 0) {
+      return res.status(400).json({ error: 'No failed sessions to retry' });
+    }
+
+    const filePath = item.filePath;
+    if (!fs.existsSync(filePath)) {
+      return res.status(400).json({ error: 'Media file not found on disk' });
+    }
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase().replace('.', '');
+    const isVideo = ['mp4', 'mov'].includes(ext);
+    let mimeType = 'image/jpeg';
+    if (ext === 'png') mimeType = 'image/png';
+    else if (ext === 'webp') mimeType = 'image/webp';
+    else if (ext === 'gif') mimeType = 'image/gif';
+    else if (ext === 'mp4') mimeType = 'video/mp4';
+    else if (ext === 'mov') mimeType = 'video/quicktime';
+
+    const endpointType = isVideo ? 'send-video' : 'send-image';
+    const mediaKey = isVideo ? 'video' : 'image';
+    const base64Data = fileBuffer.toString('base64');
+
+    const sessionResults = [...(item.sessionResults || [])];
+    let hadAnySuccess = false;
+
+    for (const sr of sessionResults) {
+      if (sr.status !== 'failed') continue;
+      const sid = sr.sessionId;
+      try {
+        const postRes = await openwaFetch(`/api/sessions/${sid}/status/${endpointType}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            [mediaKey]: { base64: base64Data, mimetype: mimeType },
+            caption: item.caption || ''
+          })
+        });
+        const postData = await postRes.json();
+        if (postRes.ok) {
+          sr.status = 'passed';
+          sr.statusId = postData.statusId || null;
+          sr.postTimestamp = new Date().toISOString();
+          delete sr.error;
+          hadAnySuccess = true;
+        } else {
+          sr.error = postData.message || `HTTP ${postRes.status}`;
+          sr.postTimestamp = new Date().toISOString();
+        }
+      } catch (err) {
+        sr.error = err.message;
+        sr.postTimestamp = new Date().toISOString();
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    const allPassed = sessionResults.every(sr => sr.status === 'passed');
+    item.status = allPassed ? 'passed' : (hadAnySuccess ? 'partially_revoked' : item.status);
+    item.sessionResults = sessionResults;
+    historyStore.update(item);
+
+    res.json({
+      success: hadAnySuccess,
+      item,
+      results: sessionResults.filter(sr => sr.status === 'failed' || sr.status === 'passed')
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // SPA fallback — requires authentication (except /login which is handled above)
 app.get('*', (req, res) => {
   if (!req.session.userId) return res.redirect('/login');

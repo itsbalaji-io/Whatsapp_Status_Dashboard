@@ -56,7 +56,9 @@ const state = {
   composerMediaUrl: null,
   activeQrPolling: null,
   activeQrSessionId: null,
-  autoRefreshLiveTimer: null
+  autoRefreshLiveTimer: null,
+  autoRefreshSessionsTimer: null,
+  scheduledItems: []
 };
 
 // MARK: - Helpers
@@ -182,6 +184,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Gateway check every 20 seconds
   setInterval(checkGatewayHealth, 20000);
+
+  // Session auto-refresh every 30 seconds
+  state.autoRefreshSessionsTimer = setInterval(fetchSessions, 30000);
 });
 
 function setupTabs() {
@@ -216,6 +221,7 @@ function switchTab(tabId) {
     fetchSessions();
   } else if (tabId === 'tab-history') {
     fetchHistory();
+    fetchScheduled();
   }
 }
 
@@ -974,7 +980,7 @@ window.deleteSession = async function(id) {
 };
 
 // MARK: - QR Code Modal Logic
-window.openQrModal = function(id, name) {
+window.openQrModal = async function(id, name) {
   const modal = document.getElementById('qrModal');
   const title = document.getElementById('qrModalTitle');
   const display = document.getElementById('qrCodeDisplayContainer');
@@ -982,8 +988,29 @@ window.openQrModal = function(id, name) {
 
   state.activeQrSessionId = id;
   title.textContent = `Link Session: ${name}`;
-  display.innerHTML = `<div style="color: #666; font-size: 0.9rem;">Connecting to WhatsApp...</div>`;
+  display.innerHTML = `<div style="color: #666; font-size: 0.9rem;">Checking session status...</div>`;
   modal.classList.add('open');
+
+  // QR Auto-connect: check if session is already ready
+  try {
+    const res = await fetch(`/api/sessions/${id}/qr`);
+    const data = await res.json();
+    if (data.status === 'ready') {
+      display.innerHTML = `
+        <div style="text-align: center; color: var(--accent-wa); font-weight: 700; padding: 20px;">
+          <div style="font-size: 3rem; margin-bottom: 8px;">✅</div>
+          <div>WhatsApp Account Already Linked & Ready!</div>
+        </div>
+      `;
+      setTimeout(() => {
+        closeQrModal();
+        fetchSessions();
+      }, 1500);
+      return;
+    }
+  } catch (e) {
+    // ignore, proceed to normal QR flow
+  }
 
   // Trigger start just in case it was stopped
   fetch(`/api/sessions/${id}/start`, { method: 'POST' }).catch(() => {});
@@ -1488,6 +1515,7 @@ function renderHistoryList() {
 
           <div class="history-actions">
             ${canRevoke ? `<button class="btn-revoke" onclick="revokeHistoryItem('${item.id}')">↩️ Revoke Status</button>` : ''}
+            ${item.status === 'failed' ? `<button class="btn-action-sm" style="background: var(--accent-orange); color: white;" onclick="retryFailedHistory('${item.id}')">🔄 Retry Failed</button>` : ''}
             <button class="btn-action-sm danger" onclick="deleteHistoryItem('${item.id}')">🗑️</button>
           </div>
         </div>
@@ -1514,6 +1542,86 @@ function renderHistoryList() {
     `;
   }).join('');
 }
+
+// MARK: - Scheduled Broadcast Management
+
+async function fetchScheduled() {
+  try {
+    const res = await fetch('/api/scheduled', { credentials: 'include' });
+    if (!res.ok) return;
+    const data = await res.json();
+    state.scheduledItems = data.items || [];
+    renderScheduledList();
+  } catch (err) {
+    console.error('Fetch scheduled failed:', err);
+  }
+}
+
+function renderScheduledList() {
+  const container = document.getElementById('scheduledListContainer');
+  if (!container) return;
+
+  const items = state.scheduledItems;
+  if (items.length === 0) {
+    container.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-muted);">No scheduled broadcasts.</div>`;
+    return;
+  }
+
+  container.innerHTML = items.map(item => `
+    <div class="scheduled-item-card" data-id="${item.id}">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(item.fileName || 'Status Media')}</div>
+          <div style="font-size: 0.78rem; color: var(--text-secondary);">
+            ⏰ ${formatTimestamp(item.scheduledFor)} • 🎯 ${item.targetSessionIds ? item.targetSessionIds.length : 0} accounts
+          </div>
+          ${item.caption ? `<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; max-height: 40px; overflow: hidden;">${escapeHtml(item.caption)}</div>` : ''}
+        </div>
+        <div style="display: flex; gap: 8px; flex-shrink: 0;">
+          <button class="btn-action-sm danger" onclick="cancelScheduled('${item.id}')" title="Cancel">
+            ❌ Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+window.cancelScheduled = async function(id) {
+  if (!confirm('Cancel this scheduled broadcast?')) return;
+  try {
+    const res = await fetch(`/api/scheduled/${id}`, { method: 'DELETE', credentials: 'include' });
+    if (res.ok) {
+      showToast('Scheduled broadcast cancelled', 'success');
+      await fetchScheduled();
+      await fetchHistory();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to cancel', 'error');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+// MARK: - Retry Failed Broadcast
+
+window.retryFailedHistory = async function(id) {
+  if (!confirm('Retry all failed sessions for this broadcast?')) return;
+  showToast('Retrying failed sessions...', 'info');
+  try {
+    const res = await fetch(`/api/history/${id}/retry-failed`, { method: 'POST', credentials: 'include' });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Retry complete: ${data.results.filter(r => r.status === 'passed').length} succeeded`, 'success');
+      await fetchHistory();
+    } else {
+      showToast(data.error || 'Retry failed', 'error');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
 
 window.revokeHistoryItem = async function(id) {
   if (!confirm('Are you sure you want to revoke and delete this status from all connected WhatsApp accounts?')) return;
