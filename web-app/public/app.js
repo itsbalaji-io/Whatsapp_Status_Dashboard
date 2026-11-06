@@ -163,6 +163,11 @@ function showToast(message, type = 'info') {
 
 // MARK: - Initializer & Tab Routing
 document.addEventListener('DOMContentLoaded', async () => {
+  // Global error handler: surface JS errors as toasts so they are visible
+  window.addEventListener('error', (e) => {
+    console.error('JS Error:', e.message, e.filename, e.lineno);
+  });
+
   const authenticated = await checkAuth();
   if (!authenticated) {
     window.location.href = '/login';
@@ -227,17 +232,20 @@ function switchTab(tabId) {
 
 async function refreshAllData(showNotification = false) {
   const refreshBtn = document.getElementById('btnRefreshAll');
-  if (refreshBtn) refreshBtn.textContent = '🔄 Checking...';
+  if (refreshBtn) refreshBtn.textContent = '🔄 Refreshing...';
 
-  await Promise.all([
+  // Use Promise.allSettled so one failing endpoint does not block the others.
+  // Sessions (target accounts) must always load even if history/live-statuses fail.
+  await Promise.allSettled([
     checkGatewayHealth(),
     fetchSessions(),
     fetchHistory(),
-    fetchLiveStatuses()
+    fetchLiveStatuses(),
+    fetchScheduled()
   ]);
 
   if (refreshBtn) refreshBtn.textContent = '🔄 Refresh';
-  if (showNotification) showToast('All account statuses refreshed!', 'success');
+  if (showNotification) showToast('All data refreshed!', 'success');
 }
 
 // MARK: - Gateway Health
@@ -373,11 +381,8 @@ function setupComposer() {
 
   btnRefreshTargets.addEventListener('click', async () => {
     btnRefreshTargets.textContent = '🔄';
-    await fetchSessions();
-    await fetchLiveStatuses();
-    updateDuplicateState();
-    renderTargetAccountsList();
-    updatePushActionState();
+    await refreshAllData(true);
+    btnRefreshTargets.textContent = '🔄';
   });
 
   // Broadcast Push Button
@@ -518,7 +523,6 @@ function renderTargetAccountsList() {
     countLabel.textContent = `(${selectedReadyCount} of ${readySessions.length} ready selected)`;
   }
 
-  // Update Select All / Deselect All text
   const filteredReady = filtered.filter(s => s.status.toLowerCase() === 'ready');
   const allFilteredSelected = filteredReady.length > 0 && filteredReady.every(s => state.selectedSessionIds.has(s.id));
   btnToggleSelectAll.textContent = allFilteredSelected ? 'Deselect All' : 'Select All';
@@ -528,55 +532,60 @@ function renderTargetAccountsList() {
     return;
   }
 
-  container.innerHTML = filtered.map(s => {
-    const isReady = s.status.toLowerCase() === 'ready';
-    const isSelected = state.selectedSessionIds.has(s.id);
-    const isPhoneDup = Boolean(state.phoneDuplicateMatches[s.id]);
-    const isHistoryDup = state.duplicateSessionIds.has(s.id);
-    const isDup = isPhoneDup || isHistoryDup;
+  try {
+    container.innerHTML = `${filtered.map(s => {
+      const isReady = s.status.toLowerCase() === 'ready';
+      const isSelected = state.selectedSessionIds.has(s.id);
+      const isPhoneDup = Boolean(state.phoneDuplicateMatches[s.id]);
+      const isHistoryDup = state.duplicateSessionIds.has(s.id);
+      const isDup = isPhoneDup || isHistoryDup;
 
-    let rowClass = 'account-row';
-    if (!isReady) rowClass += ' disabled';
-    else if (isDup) rowClass += ' duplicate';
-    else if (isSelected) rowClass += ' selected';
+      let rowClass = 'account-row';
+      if (!isReady) rowClass += ' disabled';
+      else if (isDup) rowClass += ' duplicate';
+      else if (isSelected) rowClass += ' selected';
 
-    let badgeText = 'READY';
-    let badgeClass = 'badge badge-ready';
-    if (isPhoneDup) {
-      badgeText = 'PHONE LIVE';
-      badgeClass = 'badge badge-phone-live';
-    } else if (isHistoryDup) {
-      badgeText = 'LIVE';
-      badgeClass = 'badge badge-live';
-    } else if (!isReady) {
-      badgeText = s.status.toUpperCase();
-      badgeClass = 'badge badge-offline';
-    }
+      let badgeText = 'READY';
+      let badgeClass = 'badge badge-ready';
+      if (isPhoneDup) {
+        badgeText = 'PHONE LIVE';
+        badgeClass = 'badge badge-phone-live';
+      } else if (isHistoryDup) {
+        badgeText = 'LIVE';
+        badgeClass = 'badge badge-live';
+      } else if (!isReady) {
+        badgeText = s.status.toUpperCase();
+        badgeClass = 'badge badge-offline';
+      }
 
-    const dot = isDup ? '🟠' : (isReady ? '🟢' : '🔴');
-    const dispName = s.pushName ? `${s.pushName}` : s.name;
-    const phoneDisplay = s.phone ? formatPhone(s.phone) : 'No phone';
+      const dot = isDup ? '🟠' : (isReady ? '🟢' : '🔴');
+      const dispName = s.pushName ? `${s.pushName}` : s.name;
+      const phoneDisplay = s.phone ? formatPhone(s.phone) : 'No phone';
 
-    const tooltip = isPhoneDup
-      ? `⚠️ DUPLICATE: Already posted '${state.phoneDuplicateMatches[s.id]}' from phone. Will be automatically skipped.`
-      : isHistoryDup
-      ? `⚠️ Already live on this account (within 24h). Will be automatically skipped.`
-      : '';
+      const tooltip = isPhoneDup
+        ? `⚠️ DUPLICATE: Already posted '${state.phoneDuplicateMatches[s.id]}' from phone. Will be automatically skipped.`
+        : isHistoryDup
+        ? `⚠️ Already live on this account (within 24h). Will be automatically skipped.`
+        : '';
 
-    return `
-      <div class="${rowClass}" data-id="${s.id}" title="${tooltip}">
-        <div class="account-info-group">
-          <input type="checkbox" class="account-checkbox" data-id="${s.id}" ${isSelected ? 'checked' : ''} ${!isReady ? 'disabled' : ''} />
-          <span style="font-size: 0.85rem;">${dot}</span>
-          <div class="account-name-group">
-            <div class="account-name">${dispName}</div>
-            <div class="account-phone">${phoneDisplay}</div>
+      return `
+        <div class="${rowClass}" data-id="${s.id}" title="${tooltip}">
+          <div class="account-info-group">
+            <input type="checkbox" class="account-checkbox" data-id="${s.id}" ${isSelected ? 'checked' : ''} ${!isReady ? 'disabled' : ''} />
+            <span style="font-size: 0.85rem;">${dot}</span>
+            <div class="account-name-group">
+              <div class="account-name">${dispName}</div>
+              <div class="account-phone">${phoneDisplay}</div>
+            </div>
           </div>
+          <span class="${badgeClass}">${badgeText}</span>
         </div>
-        <span class="${badgeClass}">${badgeText}</span>
-      </div>
-    `;
-  }).join('');
+      `;
+    }).join('')}`;
+  } catch (err) {
+    console.error('renderTargetAccountsList error:', err);
+    container.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--accent-red);">Error rendering accounts: ${err.message}</div>`;
+  }
 
   // Attach click listeners to rows & checkboxes
   container.querySelectorAll('.account-row').forEach(row => {
@@ -791,7 +800,9 @@ document.getElementById('btnCloseBroadcastModal').addEventListener('click', () =
 
 // MARK: - Tab 2: Sessions & QR Management
 function setupSessions() {
-  document.getElementById('btnRefreshSessions').addEventListener('click', fetchSessions);
+  document.getElementById('btnRefreshSessions').addEventListener('click', async () => {
+    await refreshAllData(true);
+  });
   document.getElementById('sessionsFilterInput').addEventListener('input', (e) => {
     state.searchQuerySessions = e.target.value.toLowerCase().trim();
     renderSessionsGrid();
@@ -1296,8 +1307,8 @@ function openUsersModal() {
                 <button type="submit" class="btn-add-user" id="btnAddUser">
                   <span>➕</span> Create User
                 </button>
+                <div id="addUserMsg" class="action-msg" style="display: none;"></div>
               </form>
-              <div id="addUserMsg" class="action-msg" style="display: none;"></div>
             </div>
           </div>
         </div>
@@ -1481,7 +1492,7 @@ function renderHistoryList() {
     const isRevoked = item.status === 'revoked' || item.status === 'partially_revoked';
     const isPassed = item.status === 'passed';
 
-    let badgeText = item.status.toUpperCase();
+    let badgeText = item.status.toUpperCASE();
     let badgeClass = 'badge badge-offline';
     if (isPassed) badgeClass = 'badge badge-ready';
     else if (isScheduled) badgeClass = 'badge badge-phone-live';
@@ -1653,7 +1664,9 @@ window.deleteHistoryItem = async function(id) {
 
 // MARK: - Tab 4: Live Statuses Query & Duplicate Detection
 function setupLiveStatuses() {
-  document.getElementById('btnRefreshLive').addEventListener('click', fetchLiveStatuses);
+  document.getElementById('btnRefreshLive').addEventListener('click', async () => {
+    await refreshAllData(true);
+  });
 
   const btnViewAccount = document.getElementById('btnLiveViewAccount');
   const btnViewGrid = document.getElementById('btnLiveViewGrid');

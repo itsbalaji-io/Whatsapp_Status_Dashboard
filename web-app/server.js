@@ -24,7 +24,7 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
-app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+app.use(express.static(path.join(__dirname, 'public'), { index: false, cacheControl: false }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ==================== AUTH SYSTEM ====================
@@ -430,7 +430,17 @@ async function openwaFetch(endpoint, options = {}) {
     'x-api-key': OPENWA_API_KEY,
     ...(options.headers || {})
   };
-  const res = await fetch(url, { ...options, headers });
+  let res = await fetch(url, { ...options, headers });
+
+  // Retry with backoff when OpenWA rate-limits (HTTP 429).
+  const maxRetries = 5;
+  for (let attempt = 0; attempt < maxRetries && res.status === 429; attempt++) {
+    const retryAfter = res.headers.get('retry-after');
+    const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.pow(2, attempt) * 1000;
+    await new Promise(r => setTimeout(r, waitMs));
+    res = await fetch(url, { ...options, headers });
+  }
+
   return res;
 }
 

@@ -947,20 +947,15 @@ a {
 }
 
 .account-row {
-  display: grid;
-  grid-template-columns: 24px 1fr auto;
+  display: flex;
   align-items: center;
-  padding: 10px 14px;
-  border-radius: 0;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
   background-color: var(--bg-card);
   transition: var(--transition);
   cursor: pointer;
   user-select: none;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.account-row:last-child {
-  border-bottom: none;
 }
 
 .account-row:hover {
@@ -968,17 +963,17 @@ a {
 }
 
 .account-row.selected {
-  background-color: rgba(37, 211, 102, 0.10);
+  background-color: rgba(37, 211, 102, 0.08);
   border-left: 3px solid var(--accent-wa);
 }
 
 .account-row.duplicate {
-  background-color: rgba(245, 158, 11, 0.10);
+  background-color: rgba(245, 158, 11, 0.08);
   border-left: 3px solid var(--accent-orange);
 }
 
 .account-row.disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
@@ -995,6 +990,7 @@ a {
   width: 16px;
   height: 16px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .account-name-group {
@@ -1003,7 +999,7 @@ a {
 }
 
 .account-name {
-  font-size: var(--font-size-base);
+  font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -1012,8 +1008,70 @@ a {
 }
 
 .account-phone {
-  font-size: var(--font-size-xs);
+  font-size: 0.72rem;
   color: var(--text-secondary);
+}
+
+.account-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-meta-item {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
+
+.account-meta-separator {
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.account-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.account-badge.ready {
+  background-color: rgba(37, 211, 102, 0.15);
+  color: var(--accent-wa);
+  border: 1px solid rgba(37, 211, 102, 0.3);
+}
+
+.account-badge.offline {
+  background-color: rgba(134, 150, 160, 0.15);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.account-badge.phone-live {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: var(--accent-orange);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.account-badge.duplicate {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: var(--accent-orange);
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 /* ==================== SCHEDULING CONTROLS ==================== */
@@ -1736,3 +1794,4 @@ a {
     padding: 16px;
   }
 }
+
