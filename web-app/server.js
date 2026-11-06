@@ -562,14 +562,74 @@ app.get('/api/health', async (req, res) => {
       totalSessions: Array.isArray(sessions) ? sessions.length : 0
     });
   } catch (err) {
+    let hint = '';
+    if (err.code === 'ECONNREFUSED') {
+      hint = 'OpenWA API is not running. Start it on the server machine: cd OpenWA && PORT=2785 BIND_HOST=127.0.0.1 npm run start';
+    } else if (err.code === 'ENOTFOUND' || err.code === 'EAI_AGAIN') {
+      hint = 'Cannot resolve OpenWA hostname. Check OPENWA_BASE_URL in your environment.';
+    } else if (err.code === 'ETIMEDOUT') {
+      hint = 'OpenWA request timed out. The gateway may be overloaded or starting up.';
+    }
     return res.json({
       gateway: 'offline',
       gatewayUrl: OPENWA_BASE_URL,
       message: err.message,
+      hint,
       readySessions: 0,
       totalSessions: 0
     });
   }
+});
+
+// Test OpenWA connectivity - returns detailed diagnostics
+app.get('/api/openwa-test', async (req, res) => {
+  const results = {};
+  
+  // Test 1: Can we reach the OpenWA base URL at all?
+  try {
+    const res1 = await fetch(`${OPENWA_BASE_URL}/api/sessions`, {
+      headers: { 'x-api-key': OPENWA_API_KEY },
+      signal: AbortSignal.timeout(5000)
+    });
+    results.baseUrl = {
+      reachable: true,
+      status: res1.status,
+      statusText: res1.statusText
+    };
+  } catch (err) {
+    results.baseUrl = {
+      reachable: false,
+      code: err.code,
+      message: err.message
+    };
+  }
+  
+  // Test 2: Can we reach the health endpoint?
+  try {
+    const res2 = await fetch(`${OPENWA_BASE_URL}/api/sessions`, {
+      headers: { 'x-api-key': OPENWA_API_KEY },
+      signal: AbortSignal.timeout(5000)
+    });
+    const data = await res2.json();
+    results.sessions = {
+      reachable: res2.ok,
+      count: Array.isArray(data) ? data.length : 0,
+      ready: Array.isArray(data) ? data.filter(s => s.status === 'ready').length : 0
+    };
+  } catch (err) {
+    results.sessions = {
+      reachable: false,
+      code: err.code,
+      message: err.message
+    };
+  }
+  
+  const allOk = results.baseUrl?.reachable && results.sessions?.reachable;
+  res.json({
+    ok: allOk,
+    gatewayUrl: OPENWA_BASE_URL,
+    tests: results
+  });
 });
 
 // 2. Sessions Management

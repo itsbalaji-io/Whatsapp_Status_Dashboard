@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WhatsApp Status Hub</title>
-  <link rel="stylesheet" href="/app.css?v=8" />
+  <link rel="stylesheet" href="/app.css?v=9" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📱</text></svg>" />
 </head>
 <body>
@@ -52,6 +52,17 @@
       </button>
     </nav>
   </header>
+
+  <!-- OpenWA Gateway Connection Banner -->
+  <div class="gateway-banner" id="gatewayBanner">
+    <div class="gateway-banner-content">
+      <span class="gateway-banner-icon" id="gatewayBannerIcon">🔴</span>
+      <span class="gateway-banner-message" id="gatewayBannerMessage">OpenWA Gateway Offline</span>
+      <button class="gateway-banner-btn" id="btnTestOpenWA" onclick="testOpenWAConnection()">Test Connection</button>
+      <button class="gateway-banner-close" id="btnCloseGatewayBanner" onclick="document.getElementById('gatewayBanner').style.display='none'">✕</button>
+    </div>
+    <div class="gateway-banner-detail" id="gatewayBannerDetail" style="display: none;"></div>
+  </div>
 
   <!-- Main Content Container -->
   <main class="main-content">
@@ -420,6 +431,6 @@
   <!-- Toast Alerts Container -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="/app.js?v=8"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>

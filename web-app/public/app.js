@@ -186,9 +186,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Initial load
   refreshAllData();
+  checkOpenWAConnection();
 
   // Gateway check every 20 seconds
   setInterval(checkGatewayHealth, 20000);
+
+  // OpenWA connection check every 30 seconds
+  setInterval(checkOpenWAConnection, 30000);
 
   // Session auto-refresh every 30 seconds
   state.autoRefreshSessionsTimer = setInterval(fetchSessions, 30000);
@@ -268,6 +272,53 @@ async function checkGatewayHealth() {
     text.textContent = '🔴 OpenWA Gateway Disconnected';
   }
 }
+
+// MARK: - OpenWA Connection Diagnostic
+async function checkOpenWAConnection() {
+  const banner = document.getElementById('gatewayBanner');
+  const icon = document.getElementById('gatewayBannerIcon');
+  const message = document.getElementById('gatewayBannerMessage');
+  const detail = document.getElementById('gatewayBannerDetail');
+
+  try {
+    const res = await fetch('/api/openwa-test', { signal: AbortSignal.timeout(10000) });
+    const data = await res.json();
+
+    if (data.ok) {
+      banner.style.display = 'none';
+      return;
+    }
+
+    // Build diagnostic message
+    const tests = data.tests || {};
+    let msg = 'OpenWA Gateway Offline';
+    let hint = '';
+
+    if (!tests.baseUrl?.reachable) {
+      msg = 'Cannot reach OpenWA Gateway';
+      hint = tests.baseUrl?.code === 'ECONNREFUSED'
+        ? 'OpenWA API is not running on the server. Start it: cd OpenWA && PORT=2785 BIND_HOST=127.0.0.1 npm run start'
+        : tests.baseUrl?.message || 'Check network connectivity';
+    } else if (!tests.sessions?.reachable) {
+      msg = 'OpenWA Gateway reachable but sessions endpoint failed';
+      hint = tests.sessions?.message || 'Check OpenWA logs for errors';
+    }
+
+    icon.textContent = '🔴';
+    message.textContent = msg;
+    detail.textContent = hint;
+    detail.style.display = hint ? 'block' : 'none';
+    banner.style.display = 'block';
+  } catch (err) {
+    icon.textContent = '🔴';
+    message.textContent = 'OpenWA Gateway Disconnected';
+    detail.textContent = err.message;
+    detail.style.display = 'block';
+    banner.style.display = 'block';
+  }
+}
+
+window.testOpenWAConnection = checkOpenWAConnection;
 
 // MARK: - Tab 1: Composer & Post
 function setupComposer() {
