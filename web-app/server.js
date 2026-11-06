@@ -1056,9 +1056,15 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
     };
     historyStore.add(historyItem);
 
+    const failedSessions = sessionResults.filter(sr => sr.status === 'failed');
+    const errorMsg = failedSessions.length > 0
+      ? `Partial failure: ${failedSessions.length} of ${sessionResults.length} sessions failed`
+      : 'All sessions failed';
+
     res.json({
       success: hadSuccess,
       scheduled: false,
+      error: hadSuccess ? undefined : errorMsg,
       item: historyItem,
       results: sessionResults
     });
