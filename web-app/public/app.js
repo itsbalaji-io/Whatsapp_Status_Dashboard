@@ -1367,10 +1367,9 @@ function setupAuthUI() {
   userInfo.style.fontSize = 'var(--font-size-sm)';
   userInfo.style.fontWeight = '600';
   userInfo.style.color = 'var(--text-secondary)';
-  const isAdmin = currentUser && currentUser.role === 'admin';
   userInfo.innerHTML = `
-    <span id="authUserDisplay">${currentUser ? currentUser.username : 'User'} (${currentUser ? currentUser.role : ''})</span>
-    ${isAdmin ? `<button type="button" id="btnManageUsers" style="background:none;border:none;color:var(--accent-blue);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:var(--font-size-xs);">👥 Users</button>` : ''}
+    <span id="authUserDisplay">${currentUser ? currentUser.username : 'User'} (${currentUser ? currentUser.role : 'user'})</span>
+    <button type="button" id="btnManageUsers" style="background:none;border:none;color:var(--accent-blue);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:var(--font-size-xs);">👥 Users</button>
     <button type="button" id="btnLogout" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:var(--font-size-xs);">Logout</button>
   `;
   headerStatus.appendChild(userInfo);
@@ -1385,14 +1384,15 @@ function setupAuthUI() {
     window.location.href = '/login';
   });
 
-  if (isAdmin) {
-    document.getElementById('btnManageUsers').addEventListener('click', () => {
+  const btnUsers = document.getElementById('btnManageUsers');
+  if (btnUsers) {
+    btnUsers.addEventListener('click', () => {
       openUsersModal();
     });
   }
 }
 
-// ==================== USERS MANAGEMENT MODAL (ADMIN ONLY) ====================
+// ==================== USERS MANAGEMENT MODAL (ADMIN & USER) ====================
 
 let usersModal = null;
 let usersListEl = null;
@@ -1441,6 +1441,17 @@ function openUsersModal() {
                   </div>
                   <span class="field-hint">Secure password for the new account</span>
                 </div>
+                <div class="form-group">
+                  <label class="form-label" for="newUserRole">Role</label>
+                  <div class="input-wrapper">
+                    <span class="input-icon">🛡️</span>
+                    <select class="form-input" id="newUserRole" style="cursor: pointer; background: var(--bg-input); color: var(--text-primary);">
+                      <option value="user" selected>User (Full Dashboard Access)</option>
+                      <option value="admin">Admin (Full Dashboard Access)</option>
+                    </select>
+                  </div>
+                  <span class="field-hint">Account role (both have full dashboard & user management access)</span>
+                </div>
                 <button type="submit" class="btn-add-user" id="btnAddUser">
                   <span>➕</span> Create User
                 </button>
@@ -1476,6 +1487,7 @@ function openUsersModal() {
       e.preventDefault();
       const username = document.getElementById('newUserUsername').value.trim();
       const password = document.getElementById('newUserPassword').value;
+      const role = document.getElementById('newUserRole') ? document.getElementById('newUserRole').value : 'user';
       if (!username || !password) {
         showAddUserMsg('Username and password are required', 'error');
         return;
@@ -1485,11 +1497,11 @@ function openUsersModal() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ username, password }),
+          body: JSON.stringify({ username, password, role }),
         });
         const data = await res.json();
         if (res.ok) {
-          showAddUserMsg(`User "${username}" added successfully!`, 'success');
+          showAddUserMsg(`User "${username}" (${role}) added successfully!`, 'success');
           addUserFormEl.reset();
           loadUsersList();
         } else {
@@ -1518,7 +1530,7 @@ async function loadUsersList() {
     document.getElementById('usersCountBadge').textContent = users.length;
 
     usersListEl.innerHTML = users.map(u => {
-      const isCurrentAdmin = u.username === 'admin' && u.role === 'admin';
+      const isPrimaryAdmin = u.username === 'admin';
       return `
         <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); font-size: var(--font-size-sm);">
           <div>
@@ -1527,7 +1539,7 @@ async function loadUsersList() {
           </div>
           <div style="display: flex; align-items: center; gap: 6px;">
             <span style="background: ${u.role === 'admin' ? 'rgba(37, 211, 102, 0.15)' : 'rgba(83, 189, 235, 0.15)'}; color: ${u.role === 'admin' ? 'var(--accent-wa)' : 'var(--accent-blue)'}; padding: 2px 8px; border-radius: 10px; font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase;">${u.role}</span>
-            ${!isCurrentAdmin ? `<button type="button" class="btn-revoke" onclick="deleteUser(${u.id})" style="padding: 4px 8px; font-size: var(--font-size-xs); margin-left: 6px;">🗑️</button>` : ''}
+            ${!isPrimaryAdmin ? `<button type="button" class="btn-revoke" onclick="deleteUser(${u.id})" style="padding: 4px 8px; font-size: var(--font-size-xs); margin-left: 6px;" title="Delete user">🗑️</button>` : ''}
           </div>
         </div>
       `;

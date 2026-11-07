@@ -124,11 +124,11 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// Auth helper: require admin role
+// Auth helper: allow all functions for both admin and user roles
 function requireAdmin(req, res, next) {
   const user = users.get(req.session.userId);
-  if (!user || user.role !== 'admin') {
-    return res.status(403).json({ error: 'Forbidden: admin only' });
+  if (!user) {
+    return res.status(401).json({ error: 'Unauthorized: please log in' });
   }
   next();
 }
@@ -208,10 +208,10 @@ app.get('/api/auth/users', requireAuth, requireAdmin, (req, res) => {
   return res.json({ users: list });
 });
 
-// Admin: create a new user
+// Users: create a new user (accessible by both admin and user)
 app.post('/api/auth/users', requireAuth, requireAdmin, (req, res) => {
   try {
-    const { username, password } = req.body || {};
+    const { username, password, role } = req.body || {};
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password required' });
     }
@@ -220,12 +220,13 @@ app.post('/api/auth/users', requireAuth, requireAdmin, (req, res) => {
       return res.status(409).json({ error: 'Username already exists' });
     }
 
+    const assignedRole = (role === 'admin') ? 'admin' : 'user';
     const passwordHash = bcrypt.hashSync(password, 10);
     const newUser = {
       id: nextUserId++,
       username,
       passwordHash,
-      role: 'user',
+      role: assignedRole,
       createdAt: new Date().toISOString(),
     };
     users.set(newUser.id, newUser);
@@ -237,12 +238,12 @@ app.post('/api/auth/users', requireAuth, requireAdmin, (req, res) => {
   }
 });
 
-// Admin: delete a user
+// Users: delete a user (accessible by both admin and user)
 app.delete('/api/auth/users/:id', requireAuth, requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const user = users.get(id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (user.role === 'admin') return res.status(403).json({ error: 'Cannot delete admin' });
+  if (user.username === 'admin') return res.status(403).json({ error: 'Cannot delete primary admin account' });
   users.delete(id);
   saveUsers();
   return res.json({ success: true });
