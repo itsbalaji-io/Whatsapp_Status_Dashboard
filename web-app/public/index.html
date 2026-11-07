@@ -4,7 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WhatsApp Status Hub</title>
-  <link rel="stylesheet" href="/app.css?v=9" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/app.css?v=24" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📱</text></svg>" />
 </head>
 <body>
@@ -77,7 +80,7 @@
             <div class="card-body">
               <div class="card-title">
                 <span>📸 Media & Content</span>
-                <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-secondary);">Image or Video</span>
+                <span style="font-size: var(--font-size-xs); font-weight: 500; color: var(--text-secondary);">Image or Video</span>
               </div>
 
             <!-- Media Drop Zone -->
@@ -105,7 +108,7 @@
             <div class="caption-box">
               <textarea class="caption-textarea" id="captionInput" placeholder="Write your WhatsApp status caption here... (e.g. flight fare routes, announcements, deals)" maxlength="700"></textarea>
               <div class="caption-footer">
-                <span style="font-size: 0.78rem; color: var(--text-muted);">WhatsApp status limit: 700 chars</span>
+                <span style="font-size: var(--font-size-xs); color: var(--text-muted);">WhatsApp status limit: 700 chars</span>
                 <span class="char-counter" id="charCountLabel">0 / 700</span>
               </div>
             </div>
@@ -129,7 +132,7 @@
             <div class="card-body">
               <div class="card-title">
                 <span>🎯 Target Accounts</span>
-                <span id="targetSelectedCountLabel" style="font-size: 0.8rem; font-weight: 600; color: var(--text-secondary);">(0 ready selected)</span>
+                <span id="targetSelectedCountLabel" style="font-size: var(--font-size-xs); font-weight: 600; color: var(--text-secondary);">(0 ready selected)</span>
               </div>
 
             <div class="target-header-bar">
@@ -152,9 +155,58 @@
                 <button type="button" class="mode-btn" id="btnModeSchedule">⏰ Schedule for Later</button>
               </div>
 
-              <div class="schedule-picker" id="schedulePickerWrap" style="display: none;">
-                <label style="font-size: 0.82rem; color: var(--text-secondary); font-weight: 600;">Deliver at:</label>
+              <!-- Schedule & Drip Options (Visible when Schedule is selected) -->
+              <div class="schedule-picker" id="schedulePickerWrap" style="display: none; margin-top: 10px;">
+                <label style="font-size: var(--font-size-sm); color: var(--text-secondary); font-weight: 600;">Deliver at:</label>
                 <input type="datetime-local" class="schedule-input" id="scheduleDateTimeInput" />
+
+                <!-- Predefined Drip Slots -->
+                <div style="margin-top: 8px;">
+                  <label style="font-size: var(--font-size-xs); color: var(--text-muted); font-weight: 600; display: block; margin-bottom: 4px;">
+                    🎯 Quick Drip Slots:
+                  </label>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    <button type="button" class="btn-drip-slot" data-time="09:00" style="padding: 4px 8px; font-size: var(--font-size-xs); border-radius: 6px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-color); color: var(--text-primary); cursor: pointer;">🌅 9:00 AM</button>
+                    <button type="button" class="btn-drip-slot" data-time="14:30" style="padding: 4px 8px; font-size: var(--font-size-xs); border-radius: 6px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-color); color: var(--text-primary); cursor: pointer;">☀️ 2:30 PM</button>
+                    <button type="button" class="btn-drip-slot" data-time="19:00" style="padding: 4px 8px; font-size: var(--font-size-xs); border-radius: 6px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-color); color: var(--text-primary); cursor: pointer;">🌙 7:00 PM</button>
+                  </div>
+                </div>
+
+                <div style="margin-top: 8px; display: flex; align-items: center; gap: 6px;">
+                  <input type="checkbox" id="checkRepeatDaily" style="accent-color: var(--whatsapp-green); cursor: pointer;" />
+                  <label for="checkRepeatDaily" style="font-size: var(--font-size-sm); color: var(--text-primary); cursor: pointer; font-weight: 600;">
+                    🔁 Repeat Daily at this time (Recurring Drip)
+                  </label>
+                </div>
+              </div>
+
+              <!-- Auto-Expire / Flash Sale Timer -->
+              <div style="margin-top: 12px;">
+                <label style="font-size: var(--font-size-sm); color: var(--text-secondary); font-weight: 600; display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                  <span>⚡ Auto-Expire / Flash Sale Timer:</span>
+                  <span id="autoExpireBadge" style="font-size: var(--font-size-2xs); color: var(--accent-orange); display: none;">Flash Sale active</span>
+                </label>
+                <select class="schedule-input" id="autoExpireSelect" style="width: 100%; padding: 8px 10px; font-size: var(--font-size-base); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-color);">
+                  <option value="0">Standard 24 Hours (WhatsApp Default)</option>
+                  <option value="2">⚡ 2 Hours (Urgent Flash Deal)</option>
+                  <option value="4">⚡ 4 Hours (Limited Seats Deal)</option>
+                  <option value="6">⚡ 6 Hours (Today's Special)</option>
+                  <option value="12">⚡ 12 Hours (Half-Day Special)</option>
+                </select>
+              </div>
+
+              <!-- Anti-Ban Smart Staggering Box -->
+              <div class="safety-options-box" style="margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: rgba(37, 211, 102, 0.05); border: 1px solid rgba(37, 211, 102, 0.2);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <label style="font-size: var(--font-size-sm); font-weight: 700; color: var(--whatsapp-green); display: flex; align-items: center; gap: 6px; cursor: pointer; margin: 0;">
+                    <input type="checkbox" id="checkAntiBanStagger" checked style="accent-color: var(--whatsapp-green);" />
+                    🛡️ Anti-Ban Smart Staggering
+                  </label>
+                  <span id="staggerDisplay" style="font-size: var(--font-size-2xs); color: var(--text-secondary); font-weight: 600;">3 - 5s jitter</span>
+                </div>
+                <div style="font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.4;">
+                  Paces multi-account dispatches with randomized delays to keep numbers safe from WhatsApp spam flags.
+                </div>
               </div>
             </div>
 
@@ -254,7 +306,7 @@
       <div class="card">
         <div class="card-title">
           <span>⏰ Scheduled Broadcasts</span>
-          <span id="scheduledCountBadge" style="font-size: 0.8rem; font-weight: 600; color: var(--text-secondary);">0</span>
+          <span id="scheduledCountBadge" style="font-size: var(--font-size-xs); font-weight: 600; color: var(--text-secondary);">0</span>
         </div>
         <div id="scheduledListContainer">
           <div style="padding: 20px; text-align: center; color: var(--text-muted);">Loading scheduled broadcasts...</div>
@@ -271,10 +323,13 @@
             <span class="tab-counter" id="liveStoriesTotalBadge">0</span>
           </div>
           <div class="btn-group" style="align-items: center;">
-            <label style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <label style="font-size: var(--font-size-xs); color: var(--text-secondary); display: flex; align-items: center; gap: 6px; cursor: pointer;">
               <input type="checkbox" id="autoRefreshLiveToggle" checked /> Auto-refresh (30s)
             </label>
             <button class="btn-secondary" id="btnRefreshLive">🔄 Refresh Stories</button>
+            <button type="button" class="btn-secondary btn-header-danger" id="btnClearAllLiveStatuses" style="color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 600;" title="Delete all active stories across all accounts at once">
+              🗑️ Delete All Statuses
+            </button>
           </div>
         </div>
 
@@ -288,7 +343,7 @@
         </div>
 
         <!-- Duplicate warning alert bar -->
-        <div id="liveDuplicateNoticeBar" style="display: none; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--accent-orange); color: #fde68a; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 0.86rem; font-weight: 600;">
+        <div id="liveDuplicateNoticeBar" style="display: none; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--accent-orange); color: #fde68a; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: var(--font-size-sm); font-weight: 600;">
           ⚠️ Duplicate stories detected! Some connected accounts have the same campaign flyer posted more than once. Use 'Remove Status' to clean up redundant posts.
         </div>
 
@@ -319,28 +374,28 @@
         <!-- QR Code View -->
         <div id="qrCodeViewWrap">
           <div id="qrCodeDisplayContainer" style="min-height: 280px; display: flex; align-items: center; justify-content: center; background: white; border-radius: 12px; padding: 16px; margin-bottom: 12px;">
-            <div style="color: #666; font-size: 0.9rem;" id="qrStatusMessage">Requesting QR code from WhatsApp...</div>
+            <div style="color: #666; font-size: var(--font-size-base);" id="qrStatusMessage">Requesting QR code from WhatsApp...</div>
           </div>
-          <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4;">
+          <div style="font-size: var(--font-size-sm); color: var(--text-secondary); line-height: 1.4;">
             Open WhatsApp on your phone → Settings → Linked Devices → Link a Device. Scan this code.
           </div>
         </div>
 
         <!-- Pairing Code View -->
         <div id="pairingCodeViewWrap" style="display: none; text-align: left;">
-          <label style="font-size: 0.82rem; color: var(--text-secondary); font-weight: 600;">Phone Number with Country Code:</label>
+          <label style="font-size: var(--font-size-sm); color: var(--text-secondary); font-weight: 600;">Phone Number with Country Code:</label>
           <div style="display: flex; gap: 8px; margin-top: 6px; margin-bottom: 12px;">
             <input type="text" class="target-search-input" id="pairingPhoneInput" placeholder="e.g. 917200238633" />
             <button class="btn-secondary" id="btnRequestPairingCode">Get Code</button>
           </div>
           <div id="pairingCodeDisplay" style="display: none; text-align: center; background: var(--bg-input); border: 2px dashed var(--accent-wa); border-radius: 8px; padding: 16px; margin-top: 14px;">
-            <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 6px;">Your 8-Character Pairing Code:</div>
+            <div style="font-size: var(--font-size-xs); color: var(--text-secondary); margin-bottom: 6px;">Your 8-Character Pairing Code:</div>
             <div id="pairingCodeText" style="font-size: 1.8rem; font-weight: 800; letter-spacing: 4px; color: var(--accent-wa);">----</div>
-            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Enter this code into WhatsApp on your phone within 60s.</div>
+            <div style="font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 6px;">Enter this code into WhatsApp on your phone within 60s.</div>
           </div>
         </div>
 
-        <div style="margin-top: 16px; font-size: 0.76rem; color: var(--text-muted);" id="qrAutoCloseNotice">
+        <div style="margin-top: 16px; font-size: var(--font-size-xs); color: var(--text-muted);" id="qrAutoCloseNotice">
           Modal will automatically close once authenticated.
         </div>
       </div>
@@ -355,7 +410,7 @@
         <button class="btn-close-modal" id="btnCloseNewSessionModal">✕</button>
       </div>
       <div class="modal-body">
-        <label style="font-size: 0.82rem; color: var(--text-secondary); font-weight: 600;">Session Identifier Name:</label>
+        <label style="font-size: var(--font-size-sm); color: var(--text-secondary); font-weight: 600;">Session Identifier Name:</label>
         <input type="text" class="target-search-input" id="newSessionNameInput" placeholder="e.g. ticketing-mumbai" style="width: 100%; margin-top: 6px; margin-bottom: 14px;" />
         <button type="button" class="push-action-btn" id="btnConfirmCreateSession" style="margin-top: 0; padding: 10px;">
           Create & Initialize Session
@@ -372,7 +427,7 @@
       </div>
       <div class="modal-body">
         <div style="margin-bottom: 14px;">
-          <div style="display: flex; justify-content: space-between; font-size: 0.82rem; margin-bottom: 6px;">
+          <div style="display: flex; justify-content: space-between; font-size: var(--font-size-sm); margin-bottom: 6px;">
             <span id="broadcastOverallStatus">Sending to targeted accounts...</span>
             <span id="broadcastProgressCounter" style="font-weight: 700;">0 / 0</span>
           </div>
@@ -396,8 +451,8 @@
     <div class="lightbox-container">
       <div class="lightbox-header">
         <div>
-          <strong id="lightboxTitle" style="font-size: 1.05rem; color: var(--text-primary);">Status Preview</strong>
-          <div id="lightboxSubtitle" style="font-size: 0.78rem; color: var(--text-secondary);">Account Details</div>
+          <strong id="lightboxTitle" style="font-size: var(--font-size-md); color: var(--text-primary);">Status Preview</strong>
+          <div id="lightboxSubtitle" style="font-size: var(--font-size-xs); color: var(--text-secondary);">Account Details</div>
         </div>
         <button class="btn-close-modal" id="btnCloseLightbox">✕</button>
       </div>
@@ -407,20 +462,25 @@
         </div>
         <div class="lightbox-details">
           <div>
-            <div style="font-size: 0.78rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px;">Posted Caption / Itinerary</div>
+            <div style="font-size: var(--font-size-xs); font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Posted Caption / Itinerary</div>
             <div class="lightbox-caption-text" id="lightboxCaptionText">No caption</div>
           </div>
-          <div style="display: flex; gap: 8px; font-size: 0.78rem; color: var(--text-secondary); flex-wrap: wrap;">
+          <div style="display: flex; gap: 8px; font-size: var(--font-size-xs); color: var(--text-secondary); flex-wrap: wrap;">
             <span id="lightboxOriginBadge" class="badge badge-offline">Origin</span>
             <span id="lightboxTypeBadge" class="badge badge-ready">Type</span>
             <span id="lightboxTimeText">Timestamp</span>
           </div>
-          <div style="margin-top: auto; display: flex; gap: 8px;">
-            <button type="button" class="push-action-btn" id="btnLightboxModify" style="margin-top: 0; padding: 10px; font-size: 0.9rem; flex: 1;">
-              ✍️ Modify in Composer
-            </button>
-            <button type="button" class="btn-revoke" id="btnLightboxDelete" style="padding: 10px 14px;">
-              🗑️ Remove
+          <div style="margin-top: auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; gap: 8px;">
+              <button type="button" class="push-action-btn" id="btnLightboxModify" style="margin-top: 0; padding: 10px; font-size: var(--font-size-base); flex: 1;">
+                ✍️ Modify in Composer
+              </button>
+              <button type="button" class="btn-revoke" id="btnLightboxDelete" style="padding: 10px 14px; white-space: nowrap;">
+                🗑️ Remove
+              </button>
+            </div>
+            <button type="button" class="btn-delete-all-accounts" id="btnLightboxDeleteAll" style="display: none; padding: 10px;">
+              ⚡ Delete on All Accounts at Once
             </button>
           </div>
         </div>
@@ -428,9 +488,35 @@
     </div>
   </div>
 
+  <!-- Status Viewers & Reader Insights Modal -->
+  <div class="lightbox-modal" id="viewersModal" style="display: none;">
+    <div class="lightbox-dialog" style="max-width: 480px; width: 92%; max-height: 82vh; display: flex; flex-direction: column; background: var(--bg-card); border-radius: var(--radius-lg); border: 1px solid var(--border-color); overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.5);">
+      <div class="lightbox-header" style="padding: 16px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <div id="viewersModalTitle" style="font-size: var(--font-size-md); font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+            <span>👁️ Story Viewers & Insights</span>
+            <span class="tab-counter" id="viewersModalCountBadge">0</span>
+          </div>
+          <div id="viewersModalSubtitle" style="font-size: var(--font-size-xs); color: var(--text-secondary); margin-top: 2px;">
+            Real-time reader receipts from WhatsApp
+          </div>
+        </div>
+        <button class="btn-close-modal" id="btnCloseViewersModal" style="background: none; border: none; font-size: 1.2rem; color: var(--text-muted); cursor: pointer;">✕</button>
+      </div>
+
+      <div style="padding: 12px 16px; border-bottom: 1px solid var(--border-color); background: rgba(0,0,0,0.15);">
+        <input type="text" class="target-search-input" id="viewersSearchInput" placeholder="🔍 Search viewers by name or phone..." style="width: 100%; font-size: var(--font-size-base);" />
+      </div>
+
+      <div id="viewersListContainer" style="overflow-y: auto; padding: 12px 16px; flex: 1; max-height: 400px;">
+        <div style="padding: 30px; text-align: center; color: var(--text-muted);">No viewers recorded yet.</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Alerts Container -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="/app.js?v=9"></script>
+  <script src="/app.js?v=24"></script>
 </body>
 </html>

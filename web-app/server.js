@@ -139,6 +139,20 @@ function getPublicUser(user) {
   return { id: user.id, username: user.username, role: user.role, createdAt: user.createdAt };
 }
 
+// Helper: get current request username
+function getReqUsername(req) {
+  if (!req || !req.session) return 'admin';
+  if (req.session.username) return req.session.username;
+  if (req.session.userId) {
+    const u = users.get(req.session.userId);
+    if (u && u.username) {
+      req.session.username = u.username;
+      return u.username;
+    }
+  }
+  return 'admin';
+}
+
 // ==================== AUTH ROUTES ====================
 
 // Login
@@ -160,6 +174,7 @@ app.post('/api/auth/login', (req, res) => {
     }
 
     req.session.userId = user.id;
+    req.session.username = user.username;
     req.session.userRole = user.role;
     return res.json({ success: true, user: getPublicUser(user) });
   } catch (err) {
@@ -235,9 +250,10 @@ app.delete('/api/auth/users/:id', requireAuth, requireAdmin, (req, res) => {
 
 // ==================== PROTECT ALL OTHER API ROUTES ====================
 
-// All /api/* routes (except /api/auth/*) require authentication
+// All /api/* routes (except /api/auth/*, /api/health, /api/openwa-test) require authentication
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/api/auth/')) return next();
+  if (req.path.startsWith('/auth/')) return next();
+  if (req.path === '/health' || req.path === '/openwa-test') return next();
   if (!req.session.userId) {
     return res.status(401).json({ error: 'Unauthorized: please log in' });
   }
@@ -318,6 +334,22 @@ function cleanSummary(caption, type = 'image') {
   if (routes.length > 1) return `${routes[0]} (+${routes.length - 1} more)`;
   const first = (caption.split('\n')[0] || '').trim().replace(/\*/g, '');
   return first || `Status (${type.charAt(0).toUpperCase() + type.slice(1)})`;
+}
+
+/**
+ * Check whether this dashboard posted a given status on a given session.
+ * Cross-references our own broadcast history: only statuses we posted (and that
+ * are still live, not yet revoked) carry a statusId we can address on revoke.
+ * Baileys only knows recipients for statuses its own engine posted — a status
+ * posted from the phone or another node cannot be revoked through the API.
+ */
+function wasStatusPostedByDashboard(sessionId, statusId) {
+  if (!sessionId || !statusId) return false;
+  return historyStore.items.some(item =>
+    (item.sessionResults || []).some(
+      sr => sr.sessionId === sessionId && sr.statusId === statusId && sr.status === 'passed' && !sr.revokedAt
+    )
+  );
 }
 
 // MARK: - History Store
@@ -422,6 +454,242 @@ class HistoryStore {
 
 const historyStore = new HistoryStore();
 
+// MARK: - Removed Statuses Store (Tombstone tracking)
+const REMOVED_STATUSES_FILE = path.join(DATA_DIR, 'removed-statuses.json');
+
+class RemovedStatusStore {
+  constructor() {
+    this.ids = new Set();
+    this.load();
+  }
+
+  load() {
+    try {
+      if (fs.existsSync(REMOVED_STATUSES_FILE)) {
+        const raw = fs.readFileSync(REMOVED_STATUSES_FILE, 'utf8');
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          this.ids = new Set(list.filter(Boolean));
+        }
+      }
+    } catch (e) {
+      this.ids = new Set();
+    }
+  }
+
+  save() {
+    try {
+      fs.writeFileSync(REMOVED_STATUSES_FILE, JSON.stringify([...this.ids], null, 2), 'utf8');
+    } catch (e) {
+      console.error('Failed to save removed-statuses:', e.message);
+    }
+  }
+
+  add(id) {
+    if (!id) return;
+    this.ids.add(id);
+    const raw = id.includes('_') ? (id.split('_')[2] || id) : id;
+    if (raw) this.ids.add(raw);
+    this.save();
+  }
+
+  has(id) {
+    if (!id) return false;
+    if (this.ids.has(id)) return true;
+    const raw = id.includes('_') ? (id.split('_')[2] || id) : id;
+    return this.ids.has(raw);
+  }
+}
+
+const removedStatusStore = new RemovedStatusStore();
+
+// MARK: - Status Viewers Store (Reader Receipts & Insights)
+const STATUS_VIEWERS_FILE = path.join(DATA_DIR, 'status-viewers.json');
+
+class StatusViewersStore {
+  constructor() {
+    this.data = {}; // { [statusId]: { count: number, lastViewedAt?: string, viewers: [{ phone, name, jid, readAt }] } }
+    this.saveTimeout = null;
+    this.load();
+  }
+
+  load() {
+    try {
+      if (fs.existsSync(STATUS_VIEWERS_FILE)) {
+        const raw = fs.readFileSync(STATUS_VIEWERS_FILE, 'utf8');
+        this.data = JSON.parse(raw) || {};
+      }
+    } catch (e) {
+      this.data = {};
+    }
+  }
+
+  save() {
+    if (this.saveTimeout) clearTimeout(this.saveTimeout);
+    this.saveTimeout = setTimeout(() => {
+      try {
+        fs.writeFileSync(STATUS_VIEWERS_FILE, JSON.stringify(this.data, null, 2), 'utf8');
+      } catch (e) {
+        console.error('Failed to save status-viewers:', e.message);
+      }
+    }, 1000);
+  }
+
+  normalizeId(id) {
+    if (!id) return '';
+    return id.includes('_') ? (id.split('_')[2] || id) : id;
+  }
+
+  recordViewer(statusId, participantJid, timestamp, contactName = '') {
+    if (!statusId || !participantJid) return;
+    const rawId = this.normalizeId(statusId);
+    const key = rawId || statusId;
+
+    if (!this.data[key]) {
+      this.data[key] = { count: 0, viewers: [] };
+    }
+
+    const phone = (participantJid || '').replace(/\D/g, '');
+    const alreadyExists = this.data[key].viewers.some(v => v.jid === participantJid || (phone && v.phone === phone));
+
+    const readAt = timestamp
+      ? new Date(typeof timestamp === 'number' && timestamp < 10000000000 ? timestamp * 1000 : timestamp).toISOString()
+      : new Date().toISOString();
+
+    if (!alreadyExists) {
+      this.data[key].viewers.unshift({
+        jid: participantJid,
+        phone: phone || participantJid,
+        name: contactName || formatPhone(phone) || 'WhatsApp Contact',
+        readAt
+      });
+      this.data[key].count = this.data[key].viewers.length;
+      this.data[key].lastViewedAt = readAt;
+      this.save();
+      console.log(`👁️ New status viewer recorded for ${key}: ${contactName || phone} (${this.data[key].count} total)`);
+    }
+  }
+
+  getViewers(statusId) {
+    if (!statusId) return { count: 0, viewers: [] };
+    const rawId = this.normalizeId(statusId);
+    return this.data[rawId] || this.data[statusId] || { count: 0, viewers: [] };
+  }
+}
+
+const statusViewersStore = new StatusViewersStore();
+
+// Contacts Name Cache: phone/jid -> Friendly Name
+const contactsCache = new Map();
+
+async function refreshContactsCache() {
+  try {
+    const sRes = await openwaFetch('/api/sessions');
+    if (!sRes.ok) return;
+    const sessions = await sRes.json();
+    const ready = (Array.isArray(sessions) ? sessions : []).filter(s => s.status === 'ready');
+    for (const s of ready) {
+      try {
+        const cRes = await openwaFetch(`/api/sessions/${s.id}/contacts`);
+        if (cRes.ok) {
+          const list = await cRes.json();
+          for (const c of (Array.isArray(list) ? list : [])) {
+            const phone = (c.number || c.id || '').replace(/\D/g, '');
+            if (phone && c.name) {
+              contactsCache.set(phone, c.name);
+              contactsCache.set(c.id, c.name);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+setTimeout(refreshContactsCache, 3000);
+setInterval(refreshContactsCache, 10 * 60 * 1000);
+
+// MARK: - OpenWA Realtime Events Gateway (Socket.IO Client)
+const { io } = require('socket.io-client');
+let openwaSocket = null;
+
+function initOpenWASocket() {
+  try {
+    const wsUrl = `${OPENWA_BASE_URL}/events`;
+    console.log(`🔌 Initializing Socket.IO connection to OpenWA at ${wsUrl}`);
+    openwaSocket = io(wsUrl, {
+      auth: { apiKey: OPENWA_API_KEY },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionDelay: 3000,
+      reconnectionAttempts: Infinity
+    });
+
+    openwaSocket.on('connect', () => {
+      console.log('📡 Connected to OpenWA Realtime Events Gateway');
+      openwaSocket.emit('message', {
+        type: 'subscribe',
+        sessionId: '*',
+        events: ['*']
+      });
+    });
+
+    openwaSocket.on('message.receipt', (data) => {
+      handleInboundReceipt(data);
+    });
+
+    openwaSocket.on('message.revoked', (data) => {
+      handleInboundRevoke(data);
+    });
+
+    // Also handle when OpenWA broadcasts as 'message' or 'event'
+    openwaSocket.on('message', (frame) => {
+      if (frame && frame.event === 'message.receipt') handleInboundReceipt(frame.data);
+      if (frame && frame.event === 'message.revoked') handleInboundRevoke(frame.data);
+    });
+
+    openwaSocket.on('event', (eventName, data) => {
+      if (eventName === 'message.receipt') handleInboundReceipt(data);
+      if (eventName === 'message.revoked') handleInboundRevoke(data);
+    });
+
+    openwaSocket.on('connect_error', (err) => {
+      // Quiet reconnect
+    });
+  } catch (err) {
+    console.warn('Socket.IO init warning:', err.message);
+  }
+}
+
+function handleInboundReceipt(data) {
+  if (!data) return;
+  const chatId = data.chatId || '';
+  if (chatId === 'status@broadcast' || chatId.includes('broadcast')) {
+    if (data.status === 'read' || data.status === 'played') {
+      const statusId = data.messageId || data.id;
+      const participant = data.participant || data.from || '';
+      const phone = participant.replace(/\D/g, '');
+      const name = contactsCache.get(phone) || contactsCache.get(participant) || '';
+      statusViewersStore.recordViewer(statusId, participant, data.timestamp, name);
+    }
+  }
+}
+
+function handleInboundRevoke(data) {
+  if (!data) return;
+  const key = data.key || {};
+  const remoteJid = key.remoteJid || data.chatId || '';
+  if (remoteJid === 'status@broadcast' || remoteJid.includes('broadcast')) {
+    const statusId = key.id || data.messageId || data.id;
+    if (statusId) {
+      console.log(`🗑️ Inbound status revoke received for ${statusId}`);
+      removedStatusStore.add(statusId);
+    }
+  }
+}
+
+setTimeout(initOpenWASocket, 2000);
+
 // MARK: - OpenWA Client Helper
 
 async function openwaFetch(endpoint, options = {}) {
@@ -513,14 +781,54 @@ async function executeScheduledItem(item) {
           postTimestamp: new Date().toISOString()
         });
       }
-      // Pacing delay 300ms
-      await new Promise(r => setTimeout(r, 300));
+      // Anti-ban staggering or normal pacing
+      if (targets.indexOf(sid) < targets.length - 1) {
+        if (item.antiBanStagger && targets.length > 1) {
+          const delaySec = Math.floor(Math.random() * (5 - 3 + 1)) + 3;
+          console.log(`🛡️ Anti-ban smart stagger (scheduled): waiting ${delaySec}s before next account dispatch...`);
+          await new Promise(r => setTimeout(r, delaySec * 1000));
+        } else {
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+    }
+
+    const autoExpireAt = item.autoExpireHours
+      ? new Date(Date.now() + item.autoExpireHours * 3600 * 1000).toISOString()
+      : null;
+
+    if (autoExpireAt) {
+      item.autoExpireAt = autoExpireAt;
+      for (const sr of sessionResults) {
+        if (sr.status === 'passed') sr.autoExpireAt = autoExpireAt;
+      }
     }
 
     item.sessionResults = sessionResults;
     item.status = hadSuccess ? 'passed' : 'failed';
     historyStore.update(item);
     console.log(`✅ Scheduled status finished with status: ${item.status}`);
+
+    // Recurring Drip: auto-reschedule for tomorrow if repeatDaily is enabled
+    if (hadSuccess && item.repeatDaily) {
+      try {
+        const tomorrow = new Date(item.scheduledFor);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const nextItem = {
+          ...item,
+          id: 'item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
+          createdAt: new Date().toISOString(),
+          scheduledFor: tomorrow.toISOString(),
+          status: 'scheduled',
+          sessionResults: [],
+          createdBy: item.createdBy || 'Daily Drip'
+        };
+        historyStore.add(nextItem);
+        console.log(`🔁 Recurring drip schedule created for tomorrow: ${tomorrow.toISOString()} (${item.fileName})`);
+      } catch (e) {
+        console.warn('Failed to clone recurring drip item:', e.message);
+      }
+    }
   } catch (err) {
     item.status = 'failed';
     item.failureReason = err.message;
@@ -530,11 +838,41 @@ async function executeScheduledItem(item) {
 
 setInterval(() => {
   const now = Date.now();
+
+  // 1. Due Scheduled items
   const dueItems = historyStore.items.filter(
     i => i.status === 'scheduled' && i.scheduledFor && new Date(i.scheduledFor).getTime() <= now
   );
   for (const item of dueItems) {
     executeScheduledItem(item);
+  }
+
+  // 2. Auto-Expire / Flash Sale timer sweep (auto-revoke when lifespan expires)
+  for (const item of historyStore.items) {
+    if (item.autoExpireAt && item.status === 'passed') {
+      const expireTs = new Date(item.autoExpireAt).getTime();
+      if (expireTs <= now) {
+        console.log(`⚡ Auto-expiring flash sale status ${item.fileName} (${item.id})`);
+        let anyRevoked = false;
+        for (const sr of (item.sessionResults || [])) {
+          if (sr.status === 'passed' && sr.statusId && !sr.revokedAt) {
+            removedStatusStore.add(sr.statusId);
+            openwaFetch(`/api/sessions/${sr.sessionId}/status/${encodeURIComponent(sr.statusId)}`, { method: 'DELETE' }).catch(() => {});
+            sr.status = 'revoked';
+            sr.revokedAt = new Date().toISOString();
+            sr.revokeReason = 'auto_expired';
+            anyRevoked = true;
+          }
+        }
+        if (anyRevoked) {
+          item.status = 'revoked';
+          item.revokedAt = new Date().toISOString();
+          item.revokedBy = 'Auto-Expire Sweeper';
+          item.revokeReason = 'auto_expired';
+          historyStore.update(item);
+        }
+      }
+    }
   }
 }, 10000);
 
@@ -584,46 +922,34 @@ app.get('/api/health', async (req, res) => {
 // Test OpenWA connectivity - returns detailed diagnostics
 app.get('/api/openwa-test', async (req, res) => {
   const results = {};
-  
-  // Test 1: Can we reach the OpenWA base URL at all?
+
+  // Single probe through the shared openwaFetch helper (same path /api/health uses).
   try {
-    const res1 = await fetch(`${OPENWA_BASE_URL}/api/sessions`, {
-      headers: { 'x-api-key': OPENWA_API_KEY },
-      signal: AbortSignal.timeout(5000)
-    });
+    const res1 = await openwaFetch('/api/sessions');
+    const data = await res1.json();
     results.baseUrl = {
       reachable: true,
       status: res1.status,
       statusText: res1.statusText
     };
+    results.sessions = {
+      reachable: res1.ok,
+      count: Array.isArray(data) ? data.length : 0,
+      ready: Array.isArray(data) ? data.filter(s => s.status === 'ready').length : 0
+    };
   } catch (err) {
     results.baseUrl = {
       reachable: false,
       code: err.code,
       message: err.message
     };
-  }
-  
-  // Test 2: Can we reach the health endpoint?
-  try {
-    const res2 = await fetch(`${OPENWA_BASE_URL}/api/sessions`, {
-      headers: { 'x-api-key': OPENWA_API_KEY },
-      signal: AbortSignal.timeout(5000)
-    });
-    const data = await res2.json();
-    results.sessions = {
-      reachable: res2.ok,
-      count: Array.isArray(data) ? data.length : 0,
-      ready: Array.isArray(data) ? data.filter(s => s.status === 'ready').length : 0
-    };
-  } catch (err) {
     results.sessions = {
       reachable: false,
       code: err.code,
       message: err.message
     };
   }
-  
+
   const allOk = results.baseUrl?.reachable && results.sessions?.reachable;
   res.json({
     ok: allOk,
@@ -859,6 +1185,13 @@ app.get('/api/live-statuses', async (req, res) => {
     const sessions = await sRes.json();
     const readySessions = sessions.filter(s => s.status === 'ready' && s.phone);
 
+    // Map phone numbers to sessions
+    const phoneToSession = {};
+    for (const s of sessions) {
+      if (s.phone) phoneToSession[s.phone.replace(/\D/g, '')] = s;
+    }
+
+    const seenIds = new Set();
     const allResults = [];
     const now = Date.now();
 
@@ -875,41 +1208,74 @@ app.get('/api/live-statuses', async (req, res) => {
             const rawStatuses = data.statuses || [];
 
             for (const st of rawStatuses) {
+              const statusId = st.id || '';
+              if (!statusId || seenIds.has(statusId) || removedStatusStore.has(statusId)) continue;
+
               const contact = st.contact || {};
-              const contactId = contact.id || '';
-              // Match own account statuses
-              if (contactId.includes(s.phone)) {
-                const statusId = st.id || '';
-                const type = st.type || 'image';
-                const caption = st.caption || '';
-                const mediaUrl = st.mediaUrl || null;
-                const timestamp = st.timestamp ? new Date(st.timestamp) : new Date();
-                const expiresAt = st.expiresAt ? new Date(st.expiresAt) : new Date(timestamp.getTime() + 24 * 3600 * 1000);
+              const contactPhone = (contact.id || '').replace(/\D/g, '');
+              const matchedSession = phoneToSession[contactPhone];
+              const postedByUs = wasStatusPostedByDashboard(s.id, statusId);
 
-                // Exclude expired
-                if (expiresAt.getTime() < now) continue;
-
-                const origin = statusId.startsWith('3EB0') ? '🖥️ Desktop' : '📱 Phone';
-                const dupKey = extractRouteFingerprint(caption);
-
-                allResults.push({
-                  id: statusId,
-                  sessionId: s.id,
-                  sessionName: s.name,
-                  phone: s.phone,
-                  pushName: s.pushName || s.name,
-                  type,
-                  caption,
-                  mediaUrl,
-                  timestamp: timestamp.toISOString(),
-                  expiresAt: expiresAt.toISOString(),
-                  origin,
-                  duplicateKey: dupKey,
-                  cleanSummary: cleanSummary(caption, type),
-                  isDuplicate: false,
-                  duplicateRepeatCount: 1
-                });
+              // ONLY show statuses belonging to connected session devices (ignore external contacts)
+              if (!matchedSession && !postedByUs) {
+                continue;
               }
+
+              seenIds.add(statusId);
+
+              const targetSession = matchedSession || s;
+              const type = st.type || 'image';
+              const caption = st.caption || '';
+              const mediaUrl = st.mediaUrl || null;
+              const timestamp = st.timestamp ? new Date(st.timestamp) : new Date();
+              const expiresAt = st.expiresAt ? new Date(st.expiresAt) : new Date(timestamp.getTime() + 24 * 3600 * 1000);
+
+              // Exclude expired
+              if (expiresAt.getTime() < now) continue;
+
+              const origin = statusId.startsWith('3EB0') ? '🖥️ Desktop' : '📱 Phone';
+              const dupKey = extractRouteFingerprint(caption);
+              const vData = statusViewersStore.getViewers(statusId);
+
+              // Look up if this status in historyStore had autoExpireAt set
+              let matchedAutoExpire = null;
+              for (const hItem of historyStore.items) {
+                if (hItem.sessionResults) {
+                  const matchSr = hItem.sessionResults.find(sr => sr.statusId === statusId);
+                  if (matchSr && matchSr.autoExpireAt) {
+                    matchedAutoExpire = matchSr.autoExpireAt;
+                    break;
+                  }
+                }
+                if (hItem.autoExpireAt && (hItem.sessionResults || []).some(sr => sr.statusId === statusId)) {
+                  matchedAutoExpire = hItem.autoExpireAt;
+                  break;
+                }
+              }
+
+              allResults.push({
+                id: statusId,
+                sessionId: targetSession.id,
+                sessionName: targetSession.name,
+                phone: targetSession.phone,
+                pushName: targetSession.pushName || targetSession.name,
+                type,
+                caption,
+                mediaUrl,
+                timestamp: timestamp.toISOString(),
+                expiresAt: expiresAt.toISOString(),
+                origin,
+                duplicateKey: dupKey,
+                cleanSummary: cleanSummary(caption, type),
+                isDuplicate: false,
+                duplicateRepeatCount: 1,
+                postedByThisDashboard: postedByUs || wasStatusPostedByDashboard(targetSession.id, statusId),
+                viewersCount: vData.count || 0,
+                viewers: vData.viewers || [],
+                lastViewedAt: vData.lastViewedAt || null,
+                autoExpireAt: matchedAutoExpire,
+                isFlashSale: !!matchedAutoExpire
+              });
             }
           } catch (e) {
             // ignore individual session error
@@ -943,6 +1309,60 @@ app.get('/api/live-statuses', async (req, res) => {
       }
     }
 
+    // Detect multi-account broadcast grouping across sessions
+    for (const item of allResults) {
+      let matchedHistoryItem = null;
+      let broadcastGroupSessions = [];
+
+      for (const hItem of historyStore.items) {
+        if (hItem.sessionResults) {
+          const match = hItem.sessionResults.find(sr => sr.statusId === item.id);
+          if (match) {
+            matchedHistoryItem = hItem;
+            broadcastGroupSessions = hItem.sessionResults
+              .filter(sr => sr.status === 'passed' && !sr.revokedAt)
+              .map(sr => ({
+                sessionId: sr.sessionId,
+                sessionName: sr.name || sr.sessionId,
+                phone: sr.phone || '',
+                statusId: sr.statusId
+              }));
+            break;
+          }
+        }
+      }
+
+      // Fallback: cross-reference other live statuses in allResults by content/fingerprint
+      if (broadcastGroupSessions.length <= 1) {
+        const matches = allResults.filter(other => {
+          if (other.id === item.id && other.sessionId === item.sessionId) return true;
+          if (item.duplicateKey && other.duplicateKey && item.duplicateKey === other.duplicateKey) return true;
+          if (item.cleanSummary && other.cleanSummary && item.cleanSummary === other.cleanSummary && !item.cleanSummary.startsWith('Status (')) return true;
+          if (item.caption && other.caption && item.caption === other.caption && item.caption.trim().length > 15) return true;
+          return false;
+        });
+        if (matches.length > 1) {
+          const seenSessions = new Set();
+          broadcastGroupSessions = [];
+          for (const m of matches) {
+            if (!seenSessions.has(m.sessionId)) {
+              seenSessions.add(m.sessionId);
+              broadcastGroupSessions.push({
+                sessionId: m.sessionId,
+                sessionName: m.sessionName,
+                phone: m.phone || '',
+                statusId: m.id
+              });
+            }
+          }
+        }
+      }
+
+      item.historyItemId = matchedHistoryItem ? matchedHistoryItem.id : null;
+      item.broadcastGroupSessions = broadcastGroupSessions;
+      item.broadcastGroupCount = broadcastGroupSessions.length;
+    }
+
     allResults.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     res.json({ statuses: allResults });
   } catch (err) {
@@ -953,25 +1373,243 @@ app.get('/api/live-statuses', async (req, res) => {
 app.delete('/api/live-statuses/:sessionId/:statusId', async (req, res) => {
   try {
     const { sessionId, statusId } = req.params;
-    const encoded = encodeURIComponent(statusId);
-    const response = await openwaFetch(`/api/sessions/${sessionId}/status/${encoded}`, {
-      method: 'DELETE'
-    });
-    if (response.ok || response.status === 404) {
-      res.json({ success: true });
-    } else {
-      const errText = await response.text();
-      res.status(response.status).json({ success: false, error: errText });
+    removedStatusStore.add(statusId);
+
+    // Also mark revoked in historyStore if present
+    for (const item of historyStore.items) {
+      if (item.sessionResults) {
+        let changed = false;
+        for (const sr of item.sessionResults) {
+          if (sr.statusId === statusId || (statusId && sr.statusId && (sr.statusId.includes(statusId) || statusId.includes(sr.statusId)))) {
+            sr.status = 'revoked';
+            sr.revokedAt = new Date().toISOString();
+            changed = true;
+          }
+        }
+        if (changed) {
+          const allRevoked = item.sessionResults.every(sr => sr.status === 'revoked' || sr.status === 'failed');
+          if (allRevoked) item.status = 'revoked';
+          item.revokedBy = getReqUsername(req);
+          item.revokedAt = new Date().toISOString();
+          historyStore.update(item);
+        }
+      }
     }
+
+    const encoded = encodeURIComponent(statusId);
+    await openwaFetch(`/api/sessions/${sessionId}/status/${encoded}`, {
+      method: 'DELETE'
+    }).catch(() => {});
+
+    // Also notify other sessions in OpenWA in case they ingested it as a contact status
+    try {
+      const sRes = await openwaFetch('/api/sessions');
+      if (sRes.ok) {
+        const allSessions = await sRes.json();
+        for (const s of allSessions) {
+          if (s.id !== sessionId) {
+            await openwaFetch(`/api/sessions/${s.id}/status/${encoded}`, { method: 'DELETE' }).catch(() => {});
+          }
+        }
+      }
+    } catch (_) {}
+
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
+// Multi-Account Batch Status Deletion: deletes a status from ALL session accounts at once
+app.post('/api/live-statuses/delete-all', async (req, res) => {
+  try {
+    const { sessionId, statusId, historyItemId, targets } = req.body || {};
+    const operator = getReqUsername(req);
+
+    let toDelete = [];
+
+    // 1. If explicit targets passed from client
+    if (Array.isArray(targets) && targets.length > 0) {
+      toDelete = targets;
+    } 
+    // 2. If historyItemId passed
+    else if (historyItemId) {
+      const hItem = historyStore.items.find(h => h.id === historyItemId);
+      if (hItem && hItem.sessionResults) {
+        toDelete = hItem.sessionResults
+          .filter(sr => sr.statusId && sr.status !== 'revoked')
+          .map(sr => ({ sessionId: sr.sessionId, statusId: sr.statusId }));
+      }
+    } 
+    // 3. If single statusId passed, find its sister sessions
+    else if (statusId) {
+      for (const hItem of historyStore.items) {
+        if ((hItem.sessionResults || []).some(sr => sr.statusId === statusId)) {
+          toDelete = hItem.sessionResults
+            .filter(sr => sr.statusId && sr.status !== 'revoked')
+            .map(sr => ({ sessionId: sr.sessionId, statusId: sr.statusId }));
+          break;
+        }
+      }
+      if (toDelete.length === 0 && sessionId) {
+        toDelete = [{ sessionId, statusId }];
+      }
+    }
+
+    if (toDelete.length === 0) {
+      return res.status(400).json({ error: 'No matching statuses found to delete across accounts' });
+    }
+
+    const deletedResults = [];
+    const nowIso = new Date().toISOString();
+
+    for (const target of toDelete) {
+      const sid = target.sessionId;
+      const stid = target.statusId;
+      if (!sid || !stid) continue;
+
+      // 1. Add to tombstone
+      removedStatusStore.add(stid);
+
+      // 2. Update historyStore
+      for (const item of historyStore.items) {
+        if (item.sessionResults) {
+          let changed = false;
+          for (const sr of item.sessionResults) {
+            if (sr.statusId === stid || (sr.statusId && sr.statusId.includes(stid))) {
+              sr.status = 'revoked';
+              sr.revokedAt = nowIso;
+              changed = true;
+            }
+          }
+          if (changed) {
+            const allRevoked = item.sessionResults.every(sr => sr.status === 'revoked' || sr.status === 'failed');
+            if (allRevoked) item.status = 'revoked';
+            item.revokedBy = operator;
+            item.revokedAt = nowIso;
+            historyStore.update(item);
+          }
+        }
+      }
+
+      // 3. Call OpenWA Baileys to delete on that specific session
+      try {
+        const encoded = encodeURIComponent(stid);
+        await openwaFetch(`/api/sessions/${sid}/status/${encoded}`, { method: 'DELETE' });
+        deletedResults.push({ sessionId: sid, statusId: stid, success: true });
+      } catch (err) {
+        deletedResults.push({ sessionId: sid, statusId: stid, success: false, error: err.message });
+      }
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    console.log(`🗑️ Multi-Account Batch Delete: removed status from ${deletedResults.length} accounts (Operator: ${operator})`);
+    return res.json({
+      success: true,
+      deletedCount: deletedResults.length,
+      results: deletedResults
+    });
+  } catch (err) {
+    console.error('Multi-account batch delete error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Clear all live statuses across all accounts (or a specific account)
+app.post('/api/live-statuses/clear-all', async (req, res) => {
+  try {
+    const { sessionId } = req.body || {};
+    const operator = getReqUsername(req);
+    const nowIso = new Date().toISOString();
+
+    const sRes = await openwaFetch('/api/sessions');
+    if (!sRes.ok) return res.status(500).json({ error: 'Failed to list sessions' });
+    const allSessions = await sRes.json();
+    const readySessions = allSessions.filter(s => s.status === 'ready' && (!sessionId || s.id === sessionId));
+
+    let deletedCount = 0;
+
+    for (const session of readySessions) {
+      try {
+        const stRes = await openwaFetch(`/api/sessions/${session.id}/status`);
+        if (!stRes.ok) continue;
+        const stories = await stRes.json();
+        if (!Array.isArray(stories)) continue;
+
+        for (const story of stories) {
+          const statusId = story.id || story.key?.id;
+          if (!statusId) continue;
+
+          removedStatusStore.add(statusId);
+          deletedCount++;
+
+          const encoded = encodeURIComponent(statusId);
+          openwaFetch(`/api/sessions/${session.id}/status/${encoded}`, { method: 'DELETE' }).catch(() => {});
+        }
+      } catch (err) {
+        console.error(`Error clearing statuses for session ${session.id}:`, err.message);
+      }
+    }
+
+    // Mark any active history items as revoked
+    for (const item of historyStore.items) {
+      if (item.status === 'passed' && item.sessionResults) {
+        let changed = false;
+        for (const sr of item.sessionResults) {
+          if ((!sessionId || sr.sessionId === sessionId) && sr.status === 'passed' && !sr.revokedAt) {
+            sr.status = 'revoked';
+            sr.revokedAt = nowIso;
+            changed = true;
+          }
+        }
+        if (changed) {
+          const allRevoked = item.sessionResults.every(sr => sr.status === 'revoked' || sr.status === 'failed');
+          if (allRevoked) item.status = 'revoked';
+          item.revokedBy = operator;
+          item.revokedAt = nowIso;
+          historyStore.update(item);
+        }
+      }
+    }
+
+    console.log(`🗑️ Clear All Live Statuses: removed ${deletedCount} statuses (Operator: ${operator})`);
+    return res.json({ success: true, count: deletedCount });
+  } catch (err) {
+    console.error('Clear all live statuses error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Viewers & Reader Receipts Insights Endpoint
+app.get('/api/live-statuses/:statusId/viewers', (req, res) => {
+  const { statusId } = req.params;
+  const vData = statusViewersStore.getViewers(statusId);
+  res.json({
+    statusId,
+    count: vData.count || 0,
+    lastViewedAt: vData.lastViewedAt || null,
+    viewers: vData.viewers || []
+  });
+});
+
 // 5. Broadcast / Push / Schedule
 app.post('/api/broadcast', upload.single('media'), async (req, res) => {
   try {
-    let { caption, targetSessionIds, isScheduled, scheduledFor, existingFilePath, mediaUrl } = req.body;
+    let {
+      caption,
+      targetSessionIds,
+      isScheduled,
+      scheduledFor,
+      existingFilePath,
+      mediaUrl,
+      antiBanStagger,
+      staggerMin,
+      staggerMax,
+      autoExpireHours,
+      repeatDaily,
+      dripSlot
+    } = req.body;
+
     if (typeof targetSessionIds === 'string') {
       try { targetSessionIds = JSON.parse(targetSessionIds); } catch (e) { targetSessionIds = []; }
     }
@@ -1012,9 +1650,14 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
 
     const ext = path.extname(filePath).toLowerCase().replace('.', '');
     const isVideo = ['mp4', 'mov'].includes(ext);
+    const autoHours = parseFloat(autoExpireHours) || 0;
+    const isStagger = (antiBanStagger === 'true' || antiBanStagger === true || antiBanStagger === undefined) && targetSessionIds.length > 1;
+    const sMin = parseInt(staggerMin, 10) || 3;
+    const sMax = parseInt(staggerMax, 10) || 5;
 
     // If scheduled
     if (isScheduled === 'true' || isScheduled === true) {
+      const operator = getReqUsername(req);
       const item = {
         id: 'item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
         createdAt: new Date().toISOString(),
@@ -1024,7 +1667,12 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
         caption: caption || '',
         status: 'scheduled',
         sessionResults: [],
-        targetSessionIds: targetSessionIds || []
+        targetSessionIds: targetSessionIds || [],
+        repeatDaily: repeatDaily === 'true' || repeatDaily === true,
+        dripSlot: dripSlot || null,
+        autoExpireHours: autoHours > 0 ? autoHours : null,
+        antiBanStagger: isStagger,
+        createdBy: operator
       };
       historyStore.add(item);
       return res.json({ success: true, scheduled: true, item });
@@ -1042,6 +1690,7 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
 
     const endpointType = isVideo ? 'send-video' : 'send-image';
     const mediaKey = isVideo ? 'video' : 'image';
+    const autoExpireAt = autoHours > 0 ? new Date(Date.now() + autoHours * 3600 * 1000).toISOString() : null;
 
     const sessionResults = [];
     let hadSuccess = false;
@@ -1054,9 +1703,19 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
       for (const s of sessions) sessionsMap[s.id] = s;
     }
 
-    for (const sid of targetSessionIds) {
+    for (let idx = 0; idx < targetSessionIds.length; idx++) {
+      const sid = targetSessionIds[idx];
       const s = sessionsMap[sid] || { name: sid, phone: '' };
       const displayName = s.pushName ? `${s.pushName} (+${s.phone})` : (s.phone ? `+${s.phone}` : s.name);
+
+      // Apply anti-ban staggering between multiple accounts
+      if (idx > 0 && isStagger) {
+        const delaySec = Math.floor(Math.random() * (sMax - sMin + 1)) + sMin;
+        console.log(`🛡️ Anti-ban smart stagger: pausing ${delaySec}s before dispatching to session ${displayName}...`);
+        await new Promise(r => setTimeout(r, delaySec * 1000));
+      } else if (idx > 0) {
+        await new Promise(r => setTimeout(r, 300));
+      }
 
       try {
         const postRes = await openwaFetch(`/api/sessions/${sid}/status/${endpointType}`, {
@@ -1077,7 +1736,8 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
             name: displayName,
             status: 'passed',
             statusId: postData.statusId || null,
-            postTimestamp: new Date().toISOString()
+            postTimestamp: new Date().toISOString(),
+            autoExpireAt: autoExpireAt || undefined
           });
         } else {
           sessionResults.push({
@@ -1099,10 +1759,9 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
           postTimestamp: new Date().toISOString()
         });
       }
-      // 300ms pacing between session dispatches
-      await new Promise(r => setTimeout(r, 300));
     }
 
+    const operator = getReqUsername(req);
     const historyItem = {
       id: 'item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
       createdAt: new Date().toISOString(),
@@ -1112,7 +1771,11 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
       status: hadSuccess ? 'passed' : 'failed',
       sessionResults,
       targetSessionIds,
-      targetAccountNames: targetSessionIds.map(id => sessionsMap[id]?.name || id)
+      targetAccountNames: targetSessionIds.map(id => sessionsMap[id]?.name || id),
+      autoExpireAt: autoExpireAt || undefined,
+      autoExpireHours: autoHours > 0 ? autoHours : undefined,
+      antiBanStagger: isStagger,
+      createdBy: operator
     };
     historyStore.add(historyItem);
 
@@ -1208,6 +1871,7 @@ app.post('/api/history/:id/revoke', async (req, res) => {
 
     for (const sr of candidates) {
       try {
+        removedStatusStore.add(sr.statusId);
         const encoded = encodeURIComponent(sr.statusId);
         const delRes = await openwaFetch(`/api/sessions/${sr.sessionId}/status/${encoded}`, {
           method: 'DELETE'
@@ -1233,6 +1897,7 @@ app.post('/api/history/:id/revoke', async (req, res) => {
 
     item.status = failCount === 0 ? 'revoked' : (successCount > 0 ? 'partially_revoked' : item.status);
     item.revokedAt = new Date().toISOString();
+    item.revokedBy = getReqUsername(req);
     historyStore.update(item);
 
     res.json({
@@ -1354,6 +2019,8 @@ app.post('/api/history/:id/retry-failed', async (req, res) => {
     const allPassed = sessionResults.every(sr => sr.status === 'passed');
     item.status = allPassed ? 'passed' : (hadAnySuccess ? 'partially_revoked' : item.status);
     item.sessionResults = sessionResults;
+    item.lastRetriedBy = getReqUsername(req);
+    item.lastRetriedAt = new Date().toISOString();
     historyStore.update(item);
 
     res.json({

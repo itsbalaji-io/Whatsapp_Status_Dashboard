@@ -45,6 +45,7 @@ const state = {
   selectedFilePreviewUrl: null,
   selectedSessionIds: new Set(),
   duplicateSessionIds: new Set(),
+  historyDuplicateSessionIds: new Set(),
   phoneDuplicateMatches: {}, // sessionId -> cleanSummary
   searchQueryTargets: '',
   searchQuerySessions: '',
@@ -280,11 +281,21 @@ async function checkOpenWAConnection() {
   const message = document.getElementById('gatewayBannerMessage');
   const detail = document.getElementById('gatewayBannerDetail');
 
-  try {
-    const res = await fetch('/api/openwa-test', { signal: AbortSignal.timeout(10000) });
-    const data = await res.json();
+  async function tryEndpoint(url) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    return await res.json();
+  }
 
-    if (data.ok) {
+  try {
+    // Primary diagnostic endpoint; fall back to /api/health if it ever returns non-JSON.
+    let data;
+    try {
+      data = await tryEndpoint('/api/openwa-test');
+    } catch (err) {
+      data = await tryEndpoint('/api/health');
+    }
+
+    if (data.ok || data.gateway === 'online') {
       banner.style.display = 'none';
       return;
     }
@@ -294,12 +305,12 @@ async function checkOpenWAConnection() {
     let msg = 'OpenWA Gateway Offline';
     let hint = '';
 
-    if (!tests.baseUrl?.reachable) {
+    if (!tests.baseUrl?.reachable && data.gateway !== 'online') {
       msg = 'Cannot reach OpenWA Gateway';
       hint = tests.baseUrl?.code === 'ECONNREFUSED'
         ? 'OpenWA API is not running on the server. Start it: cd OpenWA && PORT=2785 BIND_HOST=127.0.0.1 npm run start'
         : tests.baseUrl?.message || 'Check network connectivity';
-    } else if (!tests.sessions?.reachable) {
+    } else if ((!tests.sessions?.reachable || data.readySessions === 0) && data.gateway !== 'online') {
       msg = 'OpenWA Gateway reachable but sessions endpoint failed';
       hint = tests.sessions?.message || 'Check OpenWA logs for errors';
     }
@@ -438,6 +449,45 @@ function setupComposer() {
 
   // Broadcast Push Button
   btnPushStatus.addEventListener('click', executeBroadcast);
+
+  // Quick Drip Slot Buttons (9:00 AM, 2:30 PM, 7:00 PM)
+  document.querySelectorAll('.btn-drip-slot').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.btn-drip-slot').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const timeStr = btn.getAttribute('data-time') || '09:00';
+      state.selectedDripSlot = timeStr;
+
+      const [h, m] = timeStr.split(':').map(Number);
+      const target = new Date();
+      target.setHours(h, m, 0, 0);
+      if (target.getTime() <= Date.now()) {
+        target.setDate(target.getDate() + 1);
+      }
+      const localIso = new Date(target.getTime() - target.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      const scheduleInput = document.getElementById('scheduleDateTimeInput');
+      if (scheduleInput) scheduleInput.value = localIso;
+      updatePushActionState();
+    });
+  });
+
+  // Auto-Expire / Flash Sale select listener
+  const autoExpireSelect = document.getElementById('autoExpireSelect');
+  const autoExpireBadge = document.getElementById('autoExpireBadge');
+  if (autoExpireSelect && autoExpireBadge) {
+    autoExpireSelect.addEventListener('change', () => {
+      const val = autoExpireSelect.value;
+      if (val !== '0') {
+        autoExpireBadge.style.display = 'inline-block';
+        autoExpireBadge.textContent = `⚡ Flash: ${val}h`;
+      } else {
+        autoExpireBadge.style.display = 'none';
+      }
+    });
+  }
+
+  // Close Viewers Modal button
+  document.getElementById('btnCloseViewersModal')?.addEventListener('click', closeViewersModal);
 }
 
 function handleSelectedMedia(file) {
@@ -503,8 +553,8 @@ function updateRoutePreview(caption) {
 
 function updateDuplicateState() {
   // 1. History Duplicate Detection by file name (within 24h, not revoked)
-  state.duplicateSessionIds.clear();
-  state.phoneDuplicateMatches = {};
+  // Informational only: a past "passed" entry doesn't mean the status is still live on WhatsApp.
+  state.historyDuplicateSessionIds.clear();
 
   if (state.selectedFile && state.historyItems.length > 0) {
     const cutoff = Date.now() - 24 * 3600 * 1000;
@@ -516,11 +566,11 @@ function updateDuplicateState() {
       if ((item.fileName || '').trim().toLowerCase() !== cleanFileName) continue;
 
       if (item.status === 'scheduled' && item.targetSessionIds) {
-        item.targetSessionIds.forEach(id => state.duplicateSessionIds.add(id));
+        item.targetSessionIds.forEach(id => state.historyDuplicateSessionIds.add(id));
       } else if (item.sessionResults) {
         item.sessionResults.forEach(sr => {
           if (sr.status === 'passed' && !sr.revokedAt && sr.sessionId) {
-            state.duplicateSessionIds.add(sr.sessionId);
+            state.historyDuplicateSessionIds.add(sr.sessionId);
           }
         });
       }
@@ -528,6 +578,9 @@ function updateDuplicateState() {
   }
 
   // 2. Phone Live Duplicate Detection by Route Fingerprint matching active stories from WhatsApp
+  // This is the authoritative block: a status actually live on WhatsApp must not be re-posted.
+  state.phoneDuplicateMatches = {};
+
   const caption = document.getElementById('captionInput').value.trim();
   if (caption && state.liveStatuses.length > 0) {
     const currentFingerprint = extractRouteFingerprint(caption);
@@ -539,6 +592,12 @@ function updateDuplicateState() {
       }
     }
   }
+
+  // Combined set used for display badges only (history + live)
+  state.duplicateSessionIds = new Set([
+    ...state.historyDuplicateSessionIds,
+    ...Object.keys(state.phoneDuplicateMatches)
+  ]);
 }
 
 function renderTargetAccountsList() {
@@ -564,12 +623,12 @@ function renderTargetAccountsList() {
 
   const readySessions = state.sessions.filter(s => s.status.toLowerCase() === 'ready');
   const selectedReadyCount = readySessions.filter(s => state.selectedSessionIds.has(s.id)).length;
-  const allDupIds = new Set([...state.duplicateSessionIds, ...Object.keys(state.phoneDuplicateMatches)]);
-  const selectedDups = [...state.selectedSessionIds].filter(id => allDupIds.has(id));
-  const eligibleSelected = Math.max(0, selectedReadyCount - selectedDups.length);
+  const liveDupIds = new Set(Object.keys(state.phoneDuplicateMatches));
+  const selectedLiveDups = [...state.selectedSessionIds].filter(id => liveDupIds.has(id));
+  const eligibleSelected = Math.max(0, selectedReadyCount - selectedLiveDups.length);
 
-  if (selectedDups.length > 0) {
-    countLabel.textContent = `(${eligibleSelected} new + ${selectedDups.length} live skipped)`;
+  if (selectedLiveDups.length > 0) {
+    countLabel.textContent = `(${eligibleSelected} ready + ${selectedLiveDups.length} live skipped)`;
   } else {
     countLabel.textContent = `(${selectedReadyCount} of ${readySessions.length} ready selected)`;
   }
@@ -588,7 +647,7 @@ function renderTargetAccountsList() {
       const isReady = s.status.toLowerCase() === 'ready';
       const isSelected = state.selectedSessionIds.has(s.id);
       const isPhoneDup = Boolean(state.phoneDuplicateMatches[s.id]);
-      const isHistoryDup = state.duplicateSessionIds.has(s.id);
+      const isHistoryDup = state.historyDuplicateSessionIds.has(s.id);
       const isDup = isPhoneDup || isHistoryDup;
 
       let rowClass = 'account-row';
@@ -602,8 +661,8 @@ function renderTargetAccountsList() {
         badgeText = 'PHONE LIVE';
         badgeClass = 'badge badge-phone-live';
       } else if (isHistoryDup) {
-        badgeText = 'LIVE';
-        badgeClass = 'badge badge-live';
+        badgeText = 'POSTED BEFORE';
+        badgeClass = 'badge badge-history-dup';
       } else if (!isReady) {
         badgeText = s.status.toUpperCase();
         badgeClass = 'badge badge-offline';
@@ -616,14 +675,14 @@ function renderTargetAccountsList() {
       const tooltip = isPhoneDup
         ? `⚠️ DUPLICATE: Already posted '${state.phoneDuplicateMatches[s.id]}' from phone. Will be automatically skipped.`
         : isHistoryDup
-        ? `⚠️ Already live on this account (within 24h). Will be automatically skipped.`
+        ? `⚠️ This file was posted to this account within the last 24h. It may not be live on WhatsApp. Posting again will create a duplicate story.`
         : '';
 
       return `
         <div class="${rowClass}" data-id="${s.id}" title="${tooltip}">
           <div class="account-info-group">
             <input type="checkbox" class="account-checkbox" data-id="${s.id}" ${isSelected ? 'checked' : ''} ${!isReady ? 'disabled' : ''} />
-            <span style="font-size: 0.85rem;">${dot}</span>
+            <span style="font-size: var(--font-size-base);">${dot}</span>
             <div class="account-name-group">
               <div class="account-name">${dispName}</div>
               <div class="account-phone">${phoneDisplay}</div>
@@ -676,10 +735,13 @@ function updatePushActionState() {
     return;
   }
 
-  const allDupIds = new Set([...state.duplicateSessionIds, ...Object.keys(state.phoneDuplicateMatches)]);
+  // Blocking only on actual live statuses (authoritative). History-based "passed"
+  // entries don't mean the status is still live on WhatsApp, so they must not block.
+  const liveDupIds = new Set(Object.keys(state.phoneDuplicateMatches));
   const selectedIds = [...state.selectedSessionIds];
-  const eligibleIds = selectedIds.filter(id => !allDupIds.has(id));
-  const duplicateIds = selectedIds.filter(id => allDupIds.has(id));
+  const eligibleIds = selectedIds.filter(id => !liveDupIds.has(id));
+  const liveDuplicateIds = selectedIds.filter(id => liveDupIds.has(id));
+  const historyDuplicateIds = selectedIds.filter(id => state.historyDuplicateSessionIds.has(id) && !liveDupIds.has(id));
 
   if (selectedCount === 0) {
     btn.disabled = true;
@@ -689,10 +751,10 @@ function updatePushActionState() {
     return;
   }
 
-  // All selected accounts already have this status
-  if (eligibleIds.length === 0 && duplicateIds.length > 0) {
+  // All selected accounts already have this status live on WhatsApp — hard block
+  if (eligibleIds.length === 0 && liveDuplicateIds.length > 0) {
     btn.disabled = true;
-    btn.textContent = `🚫 Already Live on Selected Account${duplicateIds.length === 1 ? '' : 's'}`;
+    btn.textContent = `🚫 Already Live on Selected Account${liveDuplicateIds.length === 1 ? '' : 's'}`;
     feedback.textContent = `⚠️ Duplicate Blocked: This status flyer or route is already live on the selected account(s). Choose other accounts or remove the existing status first.`;
     feedback.className = 'push-feedback-msg warning';
     return;
@@ -701,18 +763,27 @@ function updatePushActionState() {
   // Eligible accounts ready for push
   btn.disabled = eligibleIds.length === 0;
 
+  const totalDupCount = liveDuplicateIds.length + historyDuplicateIds.length;
   if (isScheduled) {
-    btn.textContent = duplicateIds.length > 0
+    btn.textContent = totalDupCount > 0
       ? `⏰ Schedule for ${eligibleIds.length} New Account${eligibleIds.length === 1 ? '' : 's'}`
       : `⏰ Schedule for ${eligibleIds.length} Account${eligibleIds.length === 1 ? '' : 's'}`;
   } else {
-    btn.textContent = duplicateIds.length > 0
+    btn.textContent = totalDupCount > 0
       ? `🚀 Push to ${eligibleIds.length} New Account${eligibleIds.length === 1 ? '' : 's'}`
       : `🚀 Push Status to ${eligibleIds.length} Account${eligibleIds.length === 1 ? '' : 's'}`;
   }
 
-  if (duplicateIds.length > 0) {
-    feedback.textContent = `ℹ️ Will broadcast to ${eligibleIds.length} accounts. (${duplicateIds.length} account${duplicateIds.length === 1 ? '' : 's'} already live and will be skipped).`;
+  const infoParts = [];
+  if (liveDuplicateIds.length > 0) {
+    infoParts.push(`${liveDuplicateIds.length} account${liveDuplicateIds.length === 1 ? '' : 's'} already live (will be skipped)`);
+  }
+  if (historyDuplicateIds.length > 0) {
+    infoParts.push(`${historyDuplicateIds.length} account${historyDuplicateIds.length === 1 ? '' : 's'} posted before (within 24h)`);
+  }
+
+  if (infoParts.length > 0) {
+    feedback.textContent = `ℹ️ Will broadcast to ${eligibleIds.length} accounts. (${infoParts.join('; ')}).`;
     feedback.className = 'push-feedback-msg info';
   } else {
     feedback.textContent = '';
@@ -724,8 +795,8 @@ function updatePushActionState() {
 async function executeBroadcast() {
   if (!state.selectedFile && !state.composerMediaUrl) return;
 
-  const allDupIds = new Set([...state.duplicateSessionIds, ...Object.keys(state.phoneDuplicateMatches)]);
-  const eligibleIds = [...state.selectedSessionIds].filter(id => !allDupIds.has(id));
+  const liveDupIds = new Set(Object.keys(state.phoneDuplicateMatches));
+  const eligibleIds = [...state.selectedSessionIds].filter(id => !liveDupIds.has(id));
   if (eligibleIds.length === 0) return;
 
   const caption = document.getElementById('captionInput').value.trim();
@@ -752,16 +823,20 @@ async function executeBroadcast() {
     const s = state.sessions.find(item => item.id === id) || { name: id, phone: '' };
     const name = s.pushName || s.name;
     return `
-      <div id="prog-row-${id}" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg-input); border-radius: 6px; font-size: 0.82rem;">
+      <div id="prog-row-${id}" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg-input); border-radius: 6px; font-size: var(--font-size-sm);">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span id="prog-icon-${id}">⏳</span>
           <span style="font-weight: 600;">${name}</span>
-          <span style="color: var(--text-secondary); font-size: 0.75rem;">${formatPhone(s.phone)}</span>
+          <span style="color: var(--text-secondary); font-size: var(--font-size-xs);">${formatPhone(s.phone)}</span>
         </div>
         <span id="prog-status-${id}" style="font-weight: 600; color: var(--text-secondary);">Queued</span>
       </div>
     `;
   }).join('');
+
+  const isAntiBan = document.getElementById('checkAntiBanStagger')?.checked;
+  const autoHours = document.getElementById('autoExpireSelect')?.value || '0';
+  const isRepeatDaily = document.getElementById('checkRepeatDaily')?.checked;
 
   if (isScheduled) {
     const formData = new FormData();
@@ -771,13 +846,17 @@ async function executeBroadcast() {
     formData.append('targetSessionIds', JSON.stringify(eligibleIds));
     formData.append('isScheduled', 'true');
     formData.append('scheduledFor', scheduledFor);
+    formData.append('antiBanStagger', isAntiBan ? 'true' : 'false');
+    formData.append('autoExpireHours', autoHours);
+    formData.append('repeatDaily', isRepeatDaily ? 'true' : 'false');
+    formData.append('dripSlot', state.selectedDripSlot || '');
 
     try {
       const res = await fetch('/api/broadcast', { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
         bar.style.width = '100%';
-        overall.textContent = '✅ Status successfully queued in schedule!';
+        overall.textContent = isRepeatDaily ? '🔁 Recurring daily drip status queued!' : '✅ Status successfully queued in schedule!';
         counter.textContent = `${eligibleIds.length} / ${eligibleIds.length}`;
         eligibleIds.forEach(id => {
           document.getElementById(`prog-icon-${id}`).textContent = '⏰';
@@ -797,41 +876,48 @@ async function executeBroadcast() {
   }
 
   // Immediate Push:
-  overall.textContent = `Publishing media and route caption to WhatsApp...`;
+  overall.textContent = (isAntiBan && eligibleIds.length > 1)
+    ? `🛡️ Dispatching with Anti-Ban smart staggering (3-5s delays)...`
+    : `Publishing media and route caption to WhatsApp...`;
+
   const formData = new FormData();
   if (state.selectedFile) formData.append('media', state.selectedFile);
   else if (state.composerMediaUrl) formData.append('mediaUrl', state.composerMediaUrl);
   formData.append('caption', caption);
   formData.append('targetSessionIds', JSON.stringify(eligibleIds));
   formData.append('isScheduled', 'false');
+  formData.append('antiBanStagger', isAntiBan ? 'true' : 'false');
+  formData.append('autoExpireHours', autoHours);
 
   try {
     const res = await fetch('/api/broadcast', { method: 'POST', body: formData });
     const data = await res.json();
 
-    if (data.success) {
-      bar.style.width = '100%';
-      counter.textContent = `${eligibleIds.length} / ${eligibleIds.length}`;
-      overall.textContent = `🎉 Status broadcast completed!`;
+    bar.style.width = '100%';
+    counter.textContent = `${eligibleIds.length} / ${eligibleIds.length}`;
 
-      (data.results || []).forEach(r => {
-        const iconEl = document.getElementById(`prog-icon-${r.sessionId}`);
-        const statEl = document.getElementById(`prog-status-${r.sessionId}`);
-        if (iconEl && statEl) {
-          if (r.status === 'passed') {
-            iconEl.textContent = '✅';
-            statEl.textContent = 'Published';
-            statEl.style.color = 'var(--accent-wa)';
-          } else {
-            iconEl.textContent = '❌';
-            statEl.textContent = r.error || 'Failed';
-            statEl.style.color = 'var(--accent-red)';
-          }
+    // Always update session progress rows with their exact outcome
+    (data.results || []).forEach(r => {
+      const iconEl = document.getElementById(`prog-icon-${r.sessionId}`);
+      const statEl = document.getElementById(`prog-status-${r.sessionId}`);
+      if (iconEl && statEl) {
+        if (r.status === 'passed') {
+          iconEl.textContent = '✅';
+          statEl.textContent = 'Published';
+          statEl.style.color = 'var(--accent-wa)';
+        } else {
+          iconEl.textContent = '❌';
+          statEl.textContent = r.error || 'Failed';
+          statEl.style.color = 'var(--accent-red)';
         }
-      });
+      }
+    });
+
+    if (data.success) {
+      overall.textContent = `🎉 Status broadcast completed!`;
       showToast('Status published to WhatsApp accounts!', 'success');
     } else {
-      overall.textContent = `Broadcast error: ${data.error || 'Partial failure'}`;
+      overall.textContent = `Broadcast issue: ${data.error || 'Failed to publish to selected accounts'}`;
     }
   } catch (err) {
     overall.textContent = `Failed: ${err.message}`;
@@ -978,13 +1064,13 @@ function renderSessionsGrid() {
               <div class="session-avatar">${initial}</div>
               <div class="session-title-wrap">
                 <div class="session-title" title="${dispName}">${dispName}</div>
-                <div class="session-sub">${phoneDisplay} · <span style="font-family: monospace; font-size: 0.7rem;">${s.name}</span></div>
+                <div class="session-sub">${phoneDisplay} · <span style="font-family: monospace; font-size: var(--font-size-xs);">${s.name}</span></div>
               </div>
             </div>
             <span class="${badgeClass}">${s.status}</span>
           </div>
 
-          <div style="font-size: 0.74rem; color: var(--text-secondary); margin-top: 6px; display: flex; justify-content: space-between;">
+          <div style="font-size: var(--font-size-xs); color: var(--text-secondary); margin-top: 6px; display: flex; justify-content: space-between;">
             <span>Engine: ${s.engineLoaded ? '✅ Baileys' : '❌ Offline'}</span>
             <span>${s.lastActive ? 'Active ' + formatTimestamp(s.lastActive) : ''}</span>
           </div>
@@ -1050,7 +1136,7 @@ window.openQrModal = async function(id, name) {
 
   state.activeQrSessionId = id;
   title.textContent = `Link Session: ${name}`;
-  display.innerHTML = `<div style="color: #666; font-size: 0.9rem;">Checking session status...</div>`;
+  display.innerHTML = `<div style="color: var(--text-muted); font-size: var(--font-size-base);">Checking session status...</div>`;
   modal.classList.add('open');
 
   // QR Auto-connect: check if session is already ready
@@ -1110,13 +1196,13 @@ async function pollQrCode() {
       if (qrSrc) {
         display.innerHTML = `<img src="${qrSrc}" style="width: 250px; height: 250px; display: block;" alt="WhatsApp QR Code" />`;
       } else {
-        display.innerHTML = `<div style="padding: 20px; font-family: monospace; font-size: 0.8rem; word-break: break-all;">${data.qrCode}</div>`;
+        display.innerHTML = `<div style="padding: 20px; font-family: monospace; font-size: var(--font-size-xs); word-break: break-all;">${data.qrCode}</div>`;
       }
     } else {
-      display.innerHTML = `<div style="color: #666; font-size: 0.9rem;">Waiting for WhatsApp QR generation (${data.status || 'initializing'})...</div>`;
+      display.innerHTML = `<div style="color: var(--text-muted); font-size: var(--font-size-base);">Waiting for WhatsApp QR generation (${data.status || 'initializing'})...</div>`;
     }
   } catch (err) {
-    display.innerHTML = `<div style="color: var(--accent-red); font-size: 0.9rem;">Failed to fetch QR: ${err.message}</div>`;
+    display.innerHTML = `<div style="color: var(--accent-red); font-size: var(--font-size-base);">Failed to fetch QR: ${err.message}</div>`;
   }
 }
 
@@ -1278,14 +1364,14 @@ function setupAuthUI() {
   userInfo.style.background = 'var(--bg-input)';
   userInfo.style.border = '1px solid var(--border-color)';
   userInfo.style.borderRadius = '20px';
-  userInfo.style.fontSize = '0.82rem';
+  userInfo.style.fontSize = 'var(--font-size-sm)';
   userInfo.style.fontWeight = '600';
   userInfo.style.color = 'var(--text-secondary)';
   const isAdmin = currentUser && currentUser.role === 'admin';
   userInfo.innerHTML = `
     <span id="authUserDisplay">${currentUser ? currentUser.username : 'User'} (${currentUser ? currentUser.role : ''})</span>
-    ${isAdmin ? `<button type="button" id="btnManageUsers" style="background:none;border:none;color:var(--accent-blue);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:0.8rem;">👥 Users</button>` : ''}
-    <button type="button" id="btnLogout" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:0.8rem;">Logout</button>
+    ${isAdmin ? `<button type="button" id="btnManageUsers" style="background:none;border:none;color:var(--accent-blue);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:var(--font-size-xs);">👥 Users</button>` : ''}
+    <button type="button" id="btnLogout" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;margin-left:8px;padding:4px 8px;font-size:var(--font-size-xs);">Logout</button>
   `;
   headerStatus.appendChild(userInfo);
 
@@ -1318,39 +1404,39 @@ function openUsersModal() {
   if (!usersModal) {
     const modalHtml = `
       <div class="modal-backdrop" id="usersModal">
-        <div class="modal-content" style="max-width: 520px;">
+        <div class="modal-content">
           <div class="modal-header">
-            <div class="modal-title">Manage Users</div>
-            <button class="btn-close-modal" id="btnCloseUsersModal">✕</button>
+            <div class="modal-title">👥 Manage Users</div>
+            <button class="btn-close-modal" id="btnCloseUsersModal" title="Close">✕</button>
           </div>
-          <div class="modal-body" style="max-height: 400px; overflow-y: auto;">
-            <div style="margin-bottom: 16px;">
+          <div class="modal-body">
+            <div>
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                <strong style="font-size: 0.85rem; color: var(--text-secondary); text-transform: uppercase;">Registered Users</strong>
-                <span id="usersCountBadge" style="background: var(--bg-input); color: var(--accent-wa); padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 700;">0</span>
+                <strong style="font-size: var(--font-size-xs); color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">Registered Accounts</strong>
+                <span id="usersCountBadge" style="background: var(--bg-input); color: var(--accent-wa); padding: 2px 8px; border-radius: 12px; font-size: var(--font-size-xs); font-weight: 700;">0</span>
               </div>
-              <div id="usersListContainer" style="display: flex; flex-direction: column; gap: 8px;"></div>
+              <div id="usersListContainer"></div>
             </div>
-            <hr style="border: none; border-top: 1px solid var(--border-color); margin: 20px 0;" />
+            <hr style="border: none; border-top: 1px solid var(--border-color); margin: 6px 0;" />
             <div class="add-user-card">
               <div class="section-header">
-                <span class="section-icon">👤</span>
+                <span class="section-icon">➕</span>
                 <span class="section-title">Add New User</span>
               </div>
-              <form id="addUserForm" class="add-user-form" style="display: flex; flex-direction: column; gap: 14px;">
+              <form id="addUserForm" class="add-user-form">
                 <div class="form-group">
                   <label class="form-label" for="newUserUsername">Username</label>
                   <div class="input-wrapper">
                     <span class="input-icon">🏷️</span>
-                    <input type="text" class="form-input" id="newUserUsername" placeholder="e.g. operator" autocomplete="off" />
+                    <input type="text" class="form-input" id="newUserUsername" placeholder="e.g. operator" autocomplete="off" required />
                   </div>
-                  <span class="field-hint">Unique login name for this user</span>
+                  <span class="field-hint">Unique login name for this account</span>
                 </div>
                 <div class="form-group" style="position: relative;">
                   <label class="form-label" for="newUserPassword">Password</label>
                   <div class="input-wrapper">
                     <span class="input-icon">🔒</span>
-                    <input type="password" class="form-input" id="newUserPassword" placeholder="••••••••" />
+                    <input type="password" class="form-input" id="newUserPassword" placeholder="••••••••" required />
                     <button type="button" id="toggleNewUserPassword" class="password-toggle" aria-label="Toggle password visibility">👁️</button>
                   </div>
                   <span class="field-hint">Secure password for the new account</span>
@@ -1434,18 +1520,18 @@ async function loadUsersList() {
     usersListEl.innerHTML = users.map(u => {
       const isCurrentAdmin = u.username === 'admin' && u.role === 'admin';
       return `
-        <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); font-size: 0.85rem;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); font-size: var(--font-size-sm);">
           <div>
             <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(u.username)}</div>
-            <div style="font-size: 0.72rem; color: var(--text-muted);">ID: ${u.id} • Created: ${new Date(u.createdAt).toLocaleDateString()}</div>
+            <div style="font-size: var(--font-size-xs); color: var(--text-muted);">ID: ${u.id} • Created: ${new Date(u.createdAt).toLocaleDateString()}</div>
           </div>
           <div style="display: flex; align-items: center; gap: 6px;">
-            <span style="background: ${u.role === 'admin' ? 'rgba(37, 211, 102, 0.15)' : 'rgba(83, 189, 235, 0.15)'}; color: ${u.role === 'admin' ? 'var(--accent-wa)' : 'var(--accent-blue)'}; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;">${u.role}</span>
-            ${!isCurrentAdmin ? `<button type="button" class="btn-revoke" onclick="deleteUser(${u.id})" style="padding: 4px 8px; font-size: 0.75rem; margin-left: 6px;">🗑️</button>` : ''}
+            <span style="background: ${u.role === 'admin' ? 'rgba(37, 211, 102, 0.15)' : 'rgba(83, 189, 235, 0.15)'}; color: ${u.role === 'admin' ? 'var(--accent-wa)' : 'var(--accent-blue)'}; padding: 2px 8px; border-radius: 10px; font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase;">${u.role}</span>
+            ${!isCurrentAdmin ? `<button type="button" class="btn-revoke" onclick="deleteUser(${u.id})" style="padding: 4px 8px; font-size: var(--font-size-xs); margin-left: 6px;">🗑️</button>` : ''}
           </div>
         </div>
       `;
-    }).join('') || '<div style="padding: 12px; color: var(--text-muted); font-size: 0.85rem; text-align: center;">No users found.</div>';
+    }).join('') || '<div style="padding: 12px; color: var(--text-muted); font-size: var(--font-size-sm); text-align: center;">No users found.</div>';
   } catch (e) {
     console.error('Failed to load users:', e);
   }
@@ -1528,7 +1614,8 @@ function renderHistoryList() {
     if (query) {
       const matchFile = (item.fileName || '').toLowerCase().includes(query);
       const matchCaption = (item.caption || '').toLowerCase().includes(query);
-      return matchFile || matchCaption;
+      const matchUser = (item.createdBy || 'admin').toLowerCase().includes(query) || (item.revokedBy || '').toLowerCase().includes(query);
+      return matchFile || matchCaption || matchUser;
     }
     return true;
   });
@@ -1542,8 +1629,11 @@ function renderHistoryList() {
     const isScheduled = item.status === 'scheduled';
     const isRevoked = item.status === 'revoked' || item.status === 'partially_revoked';
     const isPassed = item.status === 'passed';
+    const creator = item.createdBy || 'admin';
+    const revoker = item.revokedBy;
+    const retrier = item.lastRetriedBy;
 
-    let badgeText = item.status.toUpperCASE();
+    let badgeText = (item.status || '').toUpperCase();
     let badgeClass = 'badge badge-offline';
     if (isPassed) badgeClass = 'badge badge-ready';
     else if (isScheduled) badgeClass = 'badge badge-phone-live';
@@ -1564,14 +1654,20 @@ function renderHistoryList() {
             <div style="font-size: 2.5rem; line-height: 1; user-select: none;">📄</div>
             <div class="history-content">
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                <strong style="font-size: 0.95rem; color: var(--text-primary);">${item.fileName || 'Status Media'}</strong>
+                <strong style="font-size: var(--font-size-base); color: var(--text-primary);">${escapeHtml(item.fileName || 'Status Media')}</strong>
                 <span class="${badgeClass}">${badgeText}</span>
+                <span class="badge badge-user-log" title="Logged by ${escapeHtml(creator)}">👤 ${escapeHtml(creator)}</span>
+                ${item.repeatDaily ? `<span class="badge badge-phone-live">🔁 Daily Drip</span>` : ''}
+                ${item.autoExpireHours ? `<span class="badge badge-flash-sale">⚡ Flash (${item.autoExpireHours}h)</span>` : ''}
               </div>
               <div class="history-meta">
                 <span>${timeText}</span>
                 <span>🎯 ${targetCount} Target Account${targetCount === 1 ? '' : 's'}</span>
+                <span>👤 Posted by: <strong style="color: var(--accent-blue);">${escapeHtml(creator)}</strong></span>
+                ${revoker ? `<span>↩️ Revoked by: <strong style="color: var(--accent-orange);">${escapeHtml(revoker)}</strong></span>` : ''}
+                ${retrier ? `<span>🔄 Retried by: <strong style="color: var(--accent-orange);">${escapeHtml(retrier)}</strong></span>` : ''}
               </div>
-              ${item.caption ? `<div class="history-caption">${item.caption}</div>` : ''}
+              ${item.caption ? `<div class="history-caption">${escapeHtml(item.caption)}</div>` : ''}
             </div>
           </div>
 
@@ -1584,17 +1680,24 @@ function renderHistoryList() {
 
         <!-- Session results breakdown collapse -->
         ${(item.sessionResults && item.sessionResults.length > 0) ? `
-          <details style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 4px;">
+          <details style="font-size: var(--font-size-xs); color: var(--text-secondary); margin-top: 4px;">
             <summary style="cursor: pointer; font-weight: 600; padding: 2px 0;">
               View Delivery Breakdown (${passedResults.length} / ${item.sessionResults.length} delivered)
             </summary>
             <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px; max-height: 150px; overflow-y: auto;">
               ${item.sessionResults.map(sr => `
-                <div style="display: flex; justify-content: space-between; padding: 4px 8px; background: var(--bg-input); border-radius: 4px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; background: var(--bg-input); border-radius: 4px;">
                   <span>${sr.name || sr.sessionId}</span>
-                  <span style="color: ${sr.status === 'passed' ? 'var(--accent-wa)' : sr.status === 'revoked' ? 'var(--accent-orange)' : 'var(--accent-red)'}; font-weight: 700;">
-                    ${sr.status.toUpperCase()}
-                  </span>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    ${sr.statusId ? `
+                      <button type="button" class="btn-viewers-badge" onclick="event.stopPropagation(); openViewersModal('${sr.statusId}')">
+                        👁️ Viewers
+                      </button>
+                    ` : ''}
+                    <span style="color: ${sr.status === 'passed' ? 'var(--accent-wa)' : sr.status === 'revoked' ? 'var(--accent-orange)' : 'var(--accent-red)'}; font-weight: 700;">
+                      ${sr.status.toUpperCase()}
+                    </span>
+                  </div>
                 </div>
               `).join('')}
             </div>
@@ -1629,15 +1732,21 @@ function renderScheduledList() {
     return;
   }
 
-  container.innerHTML = items.map(item => `
+  container.innerHTML = items.map(item => {
+    const creator = item.createdBy || 'admin';
+    return `
     <div class="scheduled-item-card" data-id="${item.id}">
       <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
         <div style="flex: 1; min-width: 0;">
-          <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(item.fileName || 'Status Media')}</div>
-          <div style="font-size: 0.78rem; color: var(--text-secondary);">
-            ⏰ ${formatTimestamp(item.scheduledFor)} • 🎯 ${item.targetSessionIds ? item.targetSessionIds.length : 0} accounts
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(item.fileName || 'Status Media')}</div>
+            <span class="badge badge-user-log" title="Queued by ${escapeHtml(creator)}">👤 ${escapeHtml(creator)}</span>
+            ${item.repeatDaily ? `<span class="badge badge-phone-live">🔁 Daily Drip</span>` : ''}
           </div>
-          ${item.caption ? `<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; max-height: 40px; overflow: hidden;">${escapeHtml(item.caption)}</div>` : ''}
+          <div style="font-size: var(--font-size-xs); color: var(--text-secondary); margin-top: 3px;">
+            ⏰ ${formatTimestamp(item.scheduledFor)} • 🎯 ${item.targetSessionIds ? item.targetSessionIds.length : 0} accounts • 👤 Queued by: <strong style="color: var(--accent-blue);">${escapeHtml(creator)}</strong>
+          </div>
+          ${item.caption ? `<div style="font-size: var(--font-size-sm); color: var(--text-muted); margin-top: 4px; max-height: 40px; overflow: hidden;">${escapeHtml(item.caption)}</div>` : ''}
         </div>
         <div style="display: flex; gap: 8px; flex-shrink: 0;">
           <button class="btn-action-sm danger" onclick="cancelScheduled('${item.id}')" title="Cancel">
@@ -1646,7 +1755,8 @@ function renderScheduledList() {
         </div>
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 window.cancelScheduled = async function(id) {
@@ -1715,8 +1825,12 @@ window.deleteHistoryItem = async function(id) {
 
 // MARK: - Tab 4: Live Statuses Query & Duplicate Detection
 function setupLiveStatuses() {
-  document.getElementById('btnRefreshLive').addEventListener('click', async () => {
+  document.getElementById('btnRefreshLive')?.addEventListener('click', async () => {
     await refreshAllData(true);
+  });
+
+  document.getElementById('btnClearAllLiveStatuses')?.addEventListener('click', () => {
+    window.clearAllLiveStatuses();
   });
 
   const btnViewAccount = document.getElementById('btnLiveViewAccount');
@@ -1842,33 +1956,43 @@ function renderLiveStatusesGrid() {
           <div class="story-account-info">
             <div>
               <div class="story-account-name">${st.pushName || st.sessionName}</div>
-              <div style="font-size: 0.75rem; color: var(--text-secondary);">${formatPhone(st.phone)}</div>
+              <div style="font-size: var(--font-size-xs); color: var(--text-secondary);">${formatPhone(st.phone)}</div>
             </div>
-            <div style="display: flex; gap: 4px;">
-              <span class="badge badge-offline" style="font-size: 0.65rem;">${st.origin}</span>
-              <span class="badge badge-ready" style="font-size: 0.65rem;">${st.type.toUpperCase()}</span>
+            <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+              ${st.broadcastGroupCount > 1 ? `<span class="badge badge-phone-live" title="Live on ${st.broadcastGroupCount} connected accounts">👥 ${st.broadcastGroupCount} Accounts</span>` : ''}
+              <span class="badge badge-offline">${st.origin}</span>
+              <span class="badge badge-ready">${st.type.toUpperCase()}</span>
             </div>
           </div>
 
-          <div style="font-size: 0.74rem; color: var(--text-muted); display: flex; justify-content: space-between;">
+          <div style="font-size: var(--font-size-xs); color: var(--text-muted); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
             <span>${formatTimestamp(st.timestamp)}</span>
-            <span>Expires in ${expiresHours}h</span>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              ${st.isFlashSale && st.autoExpireAt ? `
+                <span class="badge badge-flash-sale" title="Flash sale: auto-deletes when time expires">⚡ Flash (${formatRemainingTime(st.autoExpireAt)})</span>
+              ` : `
+                <span>Expires in ${expiresHours}h</span>
+              `}
+              <button type="button" class="btn-viewers-badge" onclick="event.stopPropagation(); openViewersModal('${st.id}')" title="Click to view reader receipts">
+                👁️ ${st.viewersCount || 0}
+              </button>
+            </div>
           </div>
 
           <div class="story-caption-text" id="caption-preview-${st.id}">
             ${st.caption ? st.caption : '<span style="color: var(--text-muted); font-style: italic;">No caption</span>'}
           </div>
           ${st.caption && st.caption.length > 110 ? `
-            <button type="button" class="btn-action-sm" style="font-size: 0.72rem; padding: 2px 8px; align-self: flex-start; margin-top: -4px;" onclick="toggleCaptionExpand('${st.id}')" id="btn-expand-${st.id}">
+            <button type="button" class="btn-action-sm" style="font-size: var(--font-size-xs); padding: 2px 8px; align-self: flex-start; margin-top: -4px;" onclick="toggleCaptionExpand('${st.id}')" id="btn-expand-${st.id}">
               🔍 View Full Flyer Text
             </button>
           ` : ''}
 
-          <div class="story-footer-actions">
-            <button class="btn-story-action" onclick="useStatusInComposer('${st.id}')" title="Transfer caption and media to composer and preselect this account">
-              ✍️ Modify in Composer
+          <div class="story-footer-actions" style="display: flex; gap: 6px;">
+            <button class="btn-story-action" style="flex: 1;" onclick="useStatusInComposer('${st.id}')" title="Transfer caption and media to composer">
+              ✍️ Modify
             </button>
-            <button class="btn-story-action delete" onclick="removeLiveStatus('${st.sessionId}', '${st.id}')">
+            <button class="btn-story-action delete" style="flex: 1;" onclick="removeLiveStatus('${st.sessionId}', '${st.id}')" title="Delete from this account">
               🗑️ Remove
             </button>
           </div>
@@ -1894,6 +2018,7 @@ function renderLiveStatusesGrid() {
       const initial = (first.pushName || first.sessionName || 'W').charAt(0).toUpperCase();
       const hasDups = stories.some(s => s.isDuplicate);
       const dupCount = stories.filter(s => s.isDuplicate).length;
+      const safeAccName = (first.pushName || first.sessionName || '').replace(/'/g, "\\'");
 
       return `
         <div class="account-stories-group ${hasDups ? 'has-duplicates' : ''}" data-session-id="${sid}">
@@ -1901,10 +2026,10 @@ function renderLiveStatusesGrid() {
             <div class="account-stories-info">
               <div class="session-avatar">${initial}</div>
               <div>
-                <div style="font-size: 1rem; font-weight: 700; color: var(--text-primary);">
+                <div style="font-size: var(--font-size-md); font-weight: 600; color: var(--text-primary);">
                   ${first.pushName || first.sessionName}
                 </div>
-                <div style="font-size: 0.78rem; color: var(--text-secondary);">
+                <div style="font-size: var(--font-size-xs); color: var(--text-secondary);">
                   ${formatPhone(first.phone)} · <span style="font-family: monospace;">${first.sessionName}</span>
                 </div>
               </div>
@@ -1912,13 +2037,16 @@ function renderLiveStatusesGrid() {
 
             <div style="display: flex; align-items: center; gap: 8px;">
               ${hasDups ? `
-                <span class="badge badge-phone-live" style="font-size: 0.72rem;">
+                <span class="badge badge-phone-live">
                   ⚠️ ${dupCount} Duplicate Stories
                 </span>
               ` : ''}
-              <span class="badge badge-ready" style="font-size: 0.72rem;">
+              <span class="badge badge-ready">
                 ${stories.length} Active ${stories.length === 1 ? 'Story' : 'Stories'}
               </span>
+              <button type="button" class="btn-action-sm" onclick="clearSessionStories('${sid}', '${safeAccName}')" style="color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.08); padding: 4px 10px; font-size: var(--font-size-xs); font-weight: 600; border-radius: var(--radius-sm); cursor: pointer;" title="Delete all live stories for this account">
+                🗑️ Clear
+              </button>
             </div>
           </div>
 
@@ -1953,16 +2081,24 @@ window.toggleCaptionExpand = function(id) {
 };
 
 window.removeLiveStatus = async function(sessionId, statusId) {
-  if (!confirm('Are you sure you want to delete this live story from WhatsApp?')) return;
-  showToast('Removing story from WhatsApp...', 'info');
+  if (!confirm('Are you sure you want to remove this story? It will be removed immediately from the dashboard and WhatsApp.')) return;
+  showToast('Removing story...', 'info');
 
   try {
     const res = await fetch(`/api/live-statuses/${sessionId}/${encodeURIComponent(statusId)}`, {
       method: 'DELETE'
     });
     if (res.ok) {
-      showToast('Story removed from WhatsApp!', 'success');
+      showToast('Story removed successfully!', 'success');
+      // Optimistically remove from state.liveStatuses immediately
+      state.liveStatuses = state.liveStatuses.filter(st => st.id !== statusId);
+      const badgeLive = document.getElementById('badgeLiveCount');
+      if (badgeLive) badgeLive.textContent = state.liveStatuses.length;
+      const totalBadge = document.getElementById('liveStoriesTotalBadge');
+      if (totalBadge) totalBadge.textContent = state.liveStatuses.length;
+      renderLiveStatusesGrid();
       await fetchLiveStatuses();
+      if (typeof fetchHistory === 'function') await fetchHistory();
     } else {
       const data = await res.json().catch(() => ({}));
       showToast(data.error || 'Failed to remove story', 'error');
@@ -1971,6 +2107,154 @@ window.removeLiveStatus = async function(sessionId, statusId) {
     showToast(e.message, 'error');
   }
 };
+
+// Delete status across ALL session accounts simultaneously
+window.deleteStatusFromAllAccounts = async function(sessionId, statusId) {
+  const item = state.liveStatuses.find(st => st.id === statusId && st.sessionId === sessionId)
+            || state.liveStatuses.find(st => st.id === statusId);
+
+  const count = item && item.broadcastGroupCount ? item.broadcastGroupCount : 'all';
+  const names = (item && item.broadcastGroupSessions && item.broadcastGroupSessions.length > 0)
+    ? item.broadcastGroupSessions.map(s => s.sessionName || s.sessionId).join(', ')
+    : 'all connected accounts';
+
+  const confirmed = confirm(
+    `⚡ DELETE FROM ALL ACCOUNTS AT ONCE?\n\n` +
+    `This status is live across ${count} connected accounts:\n${names}\n\n` +
+    `This will immediately and permanently revoke this status flyer from ALL ${count} accounts on WhatsApp.\n\n` +
+    `Do you want to proceed?`
+  );
+  if (!confirmed) return;
+
+  showToast(`Deleting status across ${count} accounts...`, 'info');
+
+  try {
+    const res = await fetch('/api/live-statuses/delete-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        sessionId,
+        statusId,
+        historyItemId: item ? item.historyItemId : null,
+        targets: item && item.broadcastGroupSessions ? item.broadcastGroupSessions : undefined
+      })
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      showToast(`✅ Successfully deleted from all ${data.deletedCount} accounts!`, 'success');
+      
+      // Optimistically remove all related status IDs from state.liveStatuses
+      if (item && item.broadcastGroupSessions) {
+        const deletedIds = new Set(item.broadcastGroupSessions.map(s => s.statusId));
+        deletedIds.add(statusId);
+        state.liveStatuses = state.liveStatuses.filter(st => !deletedIds.has(st.id));
+      } else {
+        state.liveStatuses = state.liveStatuses.filter(st => st.id !== statusId);
+      }
+
+      const badgeLive = document.getElementById('badgeLiveCount');
+      if (badgeLive) badgeLive.textContent = state.liveStatuses.length;
+      const totalBadge = document.getElementById('liveStoriesTotalBadge');
+      if (totalBadge) totalBadge.textContent = state.liveStatuses.length;
+
+      renderLiveStatusesGrid();
+      await fetchLiveStatuses();
+      if (typeof fetchHistory === 'function') await fetchHistory();
+    } else {
+      showToast(data.error || 'Failed to delete from all accounts', 'error');
+    }
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+};
+
+window.clearAllLiveStatuses = async function() {
+  const count = state.liveStatuses ? state.liveStatuses.length : 0;
+  if (count === 0) {
+    showToast('No active stories found to delete.', 'info');
+    return;
+  }
+  const confirmed = confirm(
+    `⚡ DELETE ALL LIVE STATUSES ACROSS ALL ACCOUNTS?\n\n` +
+    `There are currently ${count} active WhatsApp stories in the dashboard.\n\n` +
+    `This will immediately and permanently revoke ALL live status flyers across all connected WhatsApp accounts.\n\n` +
+    `Do you want to proceed?`
+  );
+  if (!confirmed) return;
+
+  showToast(`Deleting all ${count} active stories across accounts...`, 'info');
+
+  try {
+    const res = await fetch('/api/live-statuses/clear-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      showToast(`✅ Successfully deleted all ${data.count || count} stories across all accounts!`, 'success');
+      state.liveStatuses = [];
+      const badgeLive = document.getElementById('badgeLiveCount');
+      if (badgeLive) badgeLive.textContent = '0';
+      const totalBadge = document.getElementById('liveStoriesTotalBadge');
+      if (totalBadge) totalBadge.textContent = '0';
+      renderLiveStatusesGrid();
+      await fetchLiveStatuses();
+      if (typeof fetchHistory === 'function') await fetchHistory();
+    } else {
+      showToast(data.error || 'Failed to clear all live statuses', 'error');
+    }
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+};
+
+window.clearSessionStories = async function(sessionId, sessionName) {
+  const count = (state.liveStatuses || []).filter(st => st.sessionId === sessionId).length;
+  if (count === 0) {
+    showToast(`No active stories for ${sessionName || 'this account'}.`, 'info');
+    return;
+  }
+  const confirmed = confirm(
+    `🗑️ CLEAR STORIES FOR ${sessionName ? sessionName.toUpperCase() : 'THIS ACCOUNT'}?\n\n` +
+    `This will delete all ${count} active WhatsApp stories on this account.\n\n` +
+    `Do you want to proceed?`
+  );
+  if (!confirmed) return;
+
+  showToast(`Clearing stories for ${sessionName}...`, 'info');
+
+  try {
+    const res = await fetch('/api/live-statuses/clear-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ sessionId })
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      showToast(`✅ Successfully deleted stories for ${sessionName}!`, 'success');
+      state.liveStatuses = (state.liveStatuses || []).filter(st => st.sessionId !== sessionId);
+      const badgeLive = document.getElementById('badgeLiveCount');
+      if (badgeLive) badgeLive.textContent = state.liveStatuses.length;
+      const totalBadge = document.getElementById('liveStoriesTotalBadge');
+      if (totalBadge) totalBadge.textContent = state.liveStatuses.length;
+      renderLiveStatusesGrid();
+      await fetchLiveStatuses();
+      if (typeof fetchHistory === 'function') await fetchHistory();
+    } else {
+      showToast(data.error || 'Failed to delete stories', 'error');
+    }
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+};
+
+// Aliases for compatibility
+window.deleteLiveStatus = window.removeLiveStatus;
+window.renderLiveStatuses = renderLiveStatusesGrid;
 
 window.useStatusInComposer = function(statusId) {
   const item = state.liveStatuses.find(st => st.id === statusId);
@@ -2044,6 +2328,7 @@ window.openLightbox = function(statusId) {
   const timeText = document.getElementById('lightboxTimeText');
   const btnModify = document.getElementById('btnLightboxModify');
   const btnDelete = document.getElementById('btnLightboxDelete');
+  const btnDeleteAll = document.getElementById('btnLightboxDeleteAll');
 
   title.textContent = item.cleanSummary || 'WhatsApp Story';
   subtitle.textContent = `${item.pushName || item.sessionName} (${formatPhone(item.phone)})`;
@@ -2072,6 +2357,20 @@ window.openLightbox = function(statusId) {
     closeLightbox();
   };
 
+  if (btnDeleteAll) {
+    if (item.broadcastGroupCount > 1) {
+      btnDeleteAll.style.display = 'block';
+      btnDeleteAll.innerHTML = `⚡ Delete on All ${item.broadcastGroupCount} Accounts at Once`;
+      btnDeleteAll.onclick = () => {
+        deleteStatusFromAllAccounts(item.sessionId, statusId);
+        closeLightbox();
+      };
+    } else {
+      btnDeleteAll.style.display = 'none';
+      btnDeleteAll.onclick = null;
+    }
+  }
+
   modal.classList.add('open');
 };
 
@@ -2091,16 +2390,110 @@ function setupModals() {
     }
     if (e.target.classList.contains('lightbox-modal')) {
       closeLightbox();
+      closeViewersModal();
     }
   });
 
   document.getElementById('btnCloseLightbox')?.addEventListener('click', closeLightbox);
+  document.getElementById('btnCloseViewersModal')?.addEventListener('click', closeViewersModal);
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeLightbox();
+      closeViewersModal();
       closeQrModal();
       document.getElementById('newSessionModal')?.classList.remove('open');
     }
   });
+}
+
+// MARK: - Story Viewers & Insights Modal Logic
+window.openViewersModal = async function(statusId) {
+  const modal = document.getElementById('viewersModal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  modal.classList.add('open');
+
+  const container = document.getElementById('viewersListContainer');
+  const countBadge = document.getElementById('viewersModalCountBadge');
+  const searchInput = document.getElementById('viewersSearchInput');
+  container.innerHTML = `<div style="padding: 30px; text-align: center; color: var(--text-muted);">Fetching viewer insights...</div>`;
+
+  try {
+    const res = await fetch(`/api/live-statuses/${encodeURIComponent(statusId)}/viewers`);
+    const data = await res.json();
+    const viewers = data.viewers || [];
+    countBadge.textContent = viewers.length;
+
+    const renderList = (filterQuery = '') => {
+      const q = filterQuery.toLowerCase().trim();
+      const filtered = viewers.filter(v => {
+        if (!q) return true;
+        return (v.name && v.name.toLowerCase().includes(q)) || (v.phone && v.phone.includes(q));
+      });
+
+      if (filtered.length === 0) {
+        container.innerHTML = `<div style="padding: 40px 20px; text-align: center; color: var(--text-muted); font-size: var(--font-size-sm);">${q ? `No viewers matching "${q}"` : 'No one has viewed this status yet.'}</div>`;
+        return;
+      }
+
+      container.innerHTML = filtered.map(v => {
+        const initial = (v.name || 'W').charAt(0).toUpperCase();
+        const timeAgo = formatTimeAgo(v.readAt);
+        return `
+          <div class="viewer-row-item">
+            <div style="display: flex; align-items: center; min-width: 0; flex: 1;">
+              <div class="viewer-avatar">${initial}</div>
+              <div class="viewer-meta">
+                <div class="viewer-name">${escapeHtml(v.name || formatPhone(v.phone))}</div>
+                <div class="viewer-phone">📱 ${formatPhone(v.phone)}</div>
+              </div>
+            </div>
+            <div class="viewer-time">
+              <span>${timeAgo}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    };
+
+    renderList();
+
+    if (searchInput) {
+      searchInput.value = '';
+      searchInput.oninput = (e) => renderList(e.target.value);
+    }
+  } catch (err) {
+    container.innerHTML = `<div style="padding: 30px; text-align: center; color: var(--accent-red);">Failed to load viewers: ${err.message}</div>`;
+  }
+};
+
+window.closeViewersModal = function() {
+  const modal = document.getElementById('viewersModal');
+  if (modal) {
+    modal.style.display = 'none';
+    modal.classList.remove('open');
+  }
+};
+
+function formatRemainingTime(isoString) {
+  if (!isoString) return '';
+  const diffMs = new Date(isoString).getTime() - Date.now();
+  if (diffMs <= 0) return 'Expired';
+  const hours = Math.floor(diffMs / (3600 * 1000));
+  const mins = Math.floor((diffMs % (3600 * 1000)) / (60 * 1000));
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+function formatTimeAgo(isoString) {
+  if (!isoString) return '';
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  if (diffMs < 0) return 'Just now';
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }

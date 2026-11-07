@@ -28,13 +28,18 @@
   /* Theme toggle icon */
   --theme-icon: 🌙;
 
-  /* Consistent typography scale */
-  --font-size-xs: 0.72rem;
-  --font-size-sm: 0.82rem;
-  --font-size-base: 0.9rem;
-  --font-size-md: 1rem;
-  --font-size-lg: 1.1rem;
-  --font-size-xl: 1.25rem;
+  /* Harmonized Typography System (Even Look Across Dashboard) */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  --font-size-2xs: 0.72rem;  /* 10px */
+  --font-size-xs: 0.78rem;   /* 11px */
+  --font-size-sm: 0.84rem;   /* 12px */
+  --font-size-base: 0.9rem;  /* 13px - Standard UI Baseline */
+  --font-size-md: 0.98rem;   /* 14px */
+  --font-size-lg: 1.1rem;    /* 15.5px */
+  --font-size-xl: 1.25rem;   /* 17.5px */
+  --font-size-2xl: 1.6rem;   /* 22.5px */
 
   /* Consistent spacing */
   --space-xs: 4px;
@@ -54,7 +59,7 @@
   background: rgba(234, 67, 53, 0.1);
   border: 1px solid rgba(234, 67, 53, 0.3);
   color: var(--text-primary);
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 .gateway-banner-content {
@@ -75,7 +80,7 @@
 }
 
 .gateway-banner-detail {
-  font-size: 0.78rem;
+  font-size: var(--font-size-xs);
   color: var(--text-secondary);
   margin-top: 6px;
   padding-left: 30px;
@@ -91,7 +96,7 @@
   border: none;
   padding: 4px 12px;
   border-radius: 4px;
-  font-size: 0.78rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   cursor: pointer;
   margin-left: 8px;
@@ -137,31 +142,71 @@ body.light-theme .status-dot.offline,
   box-shadow: 0 0 6px var(--accent-red);
 }
 
-/* ==================== RESET & BASE ==================== */
-* {
+/* ==================== RESET & BASE TYPOGRAPHY ==================== */
+*, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
+html {
+  font-size: 14px;
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  font-weight: 400;
+  line-height: 1.5;
   background-color: var(--bg-primary);
   color: var(--text-primary);
-  line-height: 1.5;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Force all form & interactive elements to strictly inherit the unified typography */
+button,
+input,
+optgroup,
+select,
+textarea {
+  font-family: var(--font-sans) !important;
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  color: var(--text-primary);
 }
 
 button {
-  font-family: inherit;
   cursor: pointer;
+  font-weight: 600;
 }
 
 a {
   color: inherit;
+  text-decoration: none;
+}
+
+/* Tabular figures for even, wobble-free numeric alignment */
+.tab-count,
+.stat-value,
+.char-counter,
+.badge,
+.tab-counter,
+.btn-viewers-badge,
+.viewer-avatar,
+.history-meta,
+.scheduled-item-card,
+.account-phone,
+.account-status,
+.story-time,
+.viewer-time,
+.status-badge {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ==================== HEADER ==================== */
@@ -685,6 +730,47 @@ a {
   color: white;
 }
 
+.btn-delete-all-accounts {
+  width: 100%;
+  background: linear-gradient(135deg, rgba(234, 67, 53, 0.14) 0%, rgba(245, 158, 11, 0.14) 100%) !important;
+  color: #f87171 !important;
+  border: 1px solid rgba(234, 67, 53, 0.35) !important;
+  font-weight: 700 !important;
+  font-size: var(--font-size-xs) !important;
+  padding: 6px 10px !important;
+  border-radius: var(--radius-sm) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  letter-spacing: 0.2px;
+}
+
+.btn-delete-all-accounts:hover {
+  background: linear-gradient(135deg, #ea4335 0%, #dc2626 100%) !important;
+  color: #ffffff !important;
+  border-color: #ea4335 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(234, 67, 53, 0.35);
+}
+
+.btn-header-danger {
+  background: rgba(239, 68, 68, 0.08) !important;
+  color: #ef4444 !important;
+  border: 1px solid rgba(239, 68, 68, 0.35) !important;
+  font-weight: 600 !important;
+  transition: all var(--transition-fast) !important;
+}
+
+.btn-header-danger:hover {
+  background: rgba(239, 68, 68, 0.2) !important;
+  border-color: #ef4444 !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+}
+
 .btn-close-modal {
   background: none;
   border: none;
@@ -746,6 +832,15 @@ a {
   align-items: center;
 }
 
+.input-wrapper .form-input {
+  padding-left: 38px !important;
+}
+
+.input-wrapper .form-input[type="password"],
+.input-wrapper:has(.password-toggle) .form-input {
+  padding-right: 40px !important;
+}
+
 .input-icon {
   position: absolute;
   left: 12px;
@@ -803,14 +898,17 @@ a {
 
 /* ==================== BADGES (STANDARDIZED) ==================== */
 .badge {
-  font-size: var(--font-size-xs);
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
-  text-transform: uppercase;
+  font-size: var(--font-size-xs) !important;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
   letter-spacing: 0.3px;
   white-space: nowrap;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
 }
 
 .badge-ready {
@@ -825,6 +923,12 @@ a {
   border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
+.badge-history-dup {
+  background-color: rgba(168, 85, 247, 0.15);
+  color: var(--accent-purple);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
 .badge-live {
   background-color: rgba(245, 158, 11, 0.15);
   color: var(--accent-orange);
@@ -835,6 +939,15 @@ a {
   background-color: rgba(134, 150, 160, 0.15);
   color: var(--text-secondary);
   border: 1px solid var(--border-color);
+}
+
+.badge-user-log {
+  background-color: rgba(83, 189, 235, 0.12);
+  color: var(--accent-blue);
+  border: 1px solid rgba(83, 189, 235, 0.3);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* ==================== DROP ZONE ==================== */
@@ -1070,7 +1183,7 @@ a {
 }
 
 .account-name {
-  font-size: 0.85rem;
+  font-size: var(--font-size-base);
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -1079,7 +1192,7 @@ a {
 }
 
 .account-phone {
-  font-size: 0.72rem;
+  font-size: var(--font-size-xs);
   color: var(--text-secondary);
 }
 
@@ -1656,12 +1769,58 @@ a {
 }
 
 /* ==================== USERS MODAL ==================== */
+#usersModal .modal-content {
+  max-width: 520px;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+#usersModal .modal-body {
+  overflow-y: auto;
+  max-height: calc(88vh - 70px) !important;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#usersListContainer {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#usersListContainer::-webkit-scrollbar {
+  width: 5px;
+}
+
+#usersListContainer::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
 .add-user-card {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  padding: 20px;
+  padding: 18px 20px;
+  margin-top: 2px;
+}
+
+.add-user-card .form-group {
+  margin-bottom: 12px;
+}
+
+.add-user-card .field-hint {
   margin-top: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
 }
 
 .section-header {
@@ -1818,7 +1977,7 @@ a {
 
   .btn-theme-toggle {
     padding: 4px 8px;
-    font-size: 0.9rem;
+    font-size: var(--font-size-base);
   }
 }
 
@@ -1864,5 +2023,104 @@ a {
   .add-user-card {
     padding: 16px;
   }
+}
+
+/* ==================== STATUS VIEWERS & REALTIME INSIGHTS ==================== */
+.btn-viewers-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(83, 189, 235, 0.12);
+  color: #7dd3fc;
+  border: 1px solid rgba(83, 189, 235, 0.35);
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-viewers-badge:hover {
+  background: rgba(83, 189, 235, 0.25);
+  border-color: #38bdf8;
+  transform: translateY(-1px);
+}
+
+.badge-flash-sale {
+  background: rgba(245, 158, 11, 0.18) !important;
+  color: #fbbf24 !important;
+  border: 1px solid rgba(245, 158, 11, 0.4) !important;
+  animation: pulse-flash 2.5s infinite;
+}
+
+@keyframes pulse-flash {
+  0%, 100% { opacity: 1; border-color: rgba(245, 158, 11, 0.4); }
+  50% { opacity: 0.75; border-color: #f59e0b; }
+}
+
+.viewer-row-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  transition: background 0.15s;
+}
+
+.viewer-row-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.viewer-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: var(--font-size-base);
+  color: #fff;
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+
+.viewer-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.viewer-name {
+  font-weight: 600;
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.viewer-phone {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.viewer-time {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.btn-drip-slot.active {
+  background: var(--whatsapp-green) !important;
+  color: #0b141a !important;
+  font-weight: 700 !important;
+  border-color: var(--whatsapp-green) !important;
 }
 

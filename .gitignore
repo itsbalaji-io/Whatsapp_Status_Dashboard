@@ -9,7 +9,9 @@ node_modules/
 web-app/data/users.json
 web-app/data/history.json
 web-app/data/sessions.json
+web-app/data/removed-statuses.json
 web-app/data/*.sqlite
+web-app/uploads/
 
 # Logs
 *.log

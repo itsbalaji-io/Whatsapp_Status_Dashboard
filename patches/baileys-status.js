@@ -120,21 +120,6 @@ class BaileysStatus {
             }
         }
 
-        // 3. Fallback for audience JID list if not cached in memory
-        let jids = audience?.jids;
-        if (!jids || jids.length === 0) {
-            try {
-                const contacts = this.host.listContacts ? this.host.listContacts() : [];
-                jids = contacts
-                    .map(c => this.host.toEngineJid(c.id || c.jid))
-                    .filter(Boolean);
-            } catch (_) {}
-        }
-
-        if (!realId || realId === 'latest' || realId === '1') {
-            throw new engine_refused_error_1.EngineRefusedError(`No active WhatsApp status found in memory for this session to delete.`);
-        }
-
         const TEAM_JIDS = [
             '917639438633@s.whatsapp.net', // hari-mice
             '919962238633@s.whatsapp.net', // ticketing-raju
@@ -168,49 +153,95 @@ class BaileysStatus {
             }
         } catch (_) {}
 
+        // 3. Collect full audience: from memory if cached, or fallback to all synced contacts & chats
+        let recipientJids = [];
+        if (audience?.jids && audience.jids.length > 0) {
+            recipientJids = [...audience.jids];
+        } else {
+            const fallbackList = [];
+            try {
+                const contacts = this.host.listContacts ? this.host.listContacts() : [];
+                for (const c of contacts) {
+                    const id = c.id || c.jid;
+                    if (id && !String(id).includes('@g.us') && !String(id).includes('status@broadcast')) {
+                        fallbackList.push(this.host.toEngineJid(id));
+                    }
+                }
+            } catch (_) {}
+
+            try {
+                const chats = this.host.listChats ? this.host.listChats() : [];
+                for (const c of chats) {
+                    const id = c.id;
+                    if (id && !String(id).includes('@g.us') && !String(id).includes('status@broadcast')) {
+                        fallbackList.push(this.host.toEngineJid(id));
+                    }
+                }
+            } catch (_) {}
+
+            recipientJids = fallbackList;
+        }
+
+        if (ownJid) recipientJids.push(ownJid);
+        recipientJids.push(...TEAM_JIDS);
+
+        const allRecipients = Array.from(new Set(recipientJids.filter(Boolean)));
         const priorityBatch = Array.from(new Set([ownJid, ...TEAM_JIDS].filter(Boolean)));
 
+        const deletePayload = {
+            delete: {
+                remoteJid: 'status@broadcast',
+                fromMe: true,
+                id: realId,
+                participant: this.host.toEngineJid(this.host.normalizedSelfJid()),
+            },
+        };
+
         let lastSent = null;
-        // 1. Standard WhatsApp protocol status deletion
+
+        // 4. Standard WhatsApp protocol status deletion
         try {
-            lastSent = await this.sendStatus({
-                delete: {
-                    remoteJid: 'status@broadcast',
-                    fromMe: true,
-                    id: realId,
-                },
-            });
+            lastSent = await this.sendStatus(deletePayload, {});
         } catch (dirErr) {
             console.warn(`[BaileysStatus] Direct delete error for ${realId}:`, dirErr?.message || dirErr);
         }
 
-        // 2. Targeted revoke to connected team accounts
+        // 5. Targeted priority revoke to own account and team accounts
         if (priorityBatch.length > 0) {
             try {
-                const teamSent = await this.sendStatus({
-                    delete: {
-                        remoteJid: 'status@broadcast',
-                        fromMe: true,
-                        id: realId,
-                    },
-                }, { statusJidList: priorityBatch });
+                const teamSent = await this.sendStatus(deletePayload, { statusJidList: priorityBatch });
                 if (!lastSent) lastSent = teamSent;
             } catch (teamErr) {
                 console.warn(`[BaileysStatus] Team revoke error for ${realId}:`, teamErr?.message || teamErr);
             }
         }
 
-        // 3. Background non-blocking notification to original audience if cached
-        if (audience?.jids && audience.jids.length > 0) {
-            const extraJids = audience.jids.slice(0, 100);
-            setImmediate(() => {
-                this.sendStatus({
-                    delete: {
-                        remoteJid: 'status@broadcast',
-                        fromMe: true,
-                        id: realId,
-                    },
-                }, { statusJidList: extraJids }).catch(() => {});
+        // 6. Broadcast revoke to ALL remaining contacts in batches of 100
+        const prioritySet = new Set(priorityBatch);
+        const otherRecipients = allRecipients.filter(j => !prioritySet.has(j));
+
+        if (otherRecipients.length > 0) {
+            const BATCH_SIZE = 100;
+            const batches = [];
+            for (let i = 0; i < otherRecipients.length; i += BATCH_SIZE) {
+                batches.push(otherRecipients.slice(i, i + BATCH_SIZE));
+            }
+
+            console.log(`[BaileysStatus] Broadcasting status revoke for ${realId} to ${otherRecipients.length} contacts across ${batches.length} batches`);
+
+            setImmediate(async () => {
+                for (let i = 0; i < batches.length; i++) {
+                    const batch = batches[i];
+                    try {
+                        await this.sendStatus(deletePayload, { statusJidList: batch });
+                        console.log(`[BaileysStatus] Status revoke batch ${i + 1}/${batches.length} sent (${batch.length} contacts) for ${realId}`);
+                    } catch (batchErr) {
+                        console.warn(`[BaileysStatus] Status revoke batch ${i + 1}/${batches.length} failed for ${realId}:`, batchErr?.message || batchErr);
+                    }
+                    if (i < batches.length - 1) {
+                        await new Promise(r => setTimeout(r, 600));
+                    }
+                }
             });
         }
 
