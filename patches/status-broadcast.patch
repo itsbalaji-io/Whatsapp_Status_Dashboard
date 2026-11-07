@@ -1,283 +1,5 @@
-From c83989528216b576e37084c5e1d2c68f281da9f8 Mon Sep 17 00:00:00 2001
-From: Balaji <balaji@serverpc.local>
-Date: Sat, 7 Nov 2026 11:47:21 +0530
-Subject: [PATCH] fix(baileys): broadcast status delete to all contacts with
- fallback and batching
-
----
- package-lock.json                             |  78 -----
- src/engine/adapters/baileys-status.ts         | 310 +++++++++++++++---
- src/main.ts                                   |   5 +-
- .../status-store/status-store.service.ts      |  23 ++
- src/modules/status/status.service.ts          |   6 +-
- 5 files changed, 289 insertions(+), 133 deletions(-)
-
-diff --git a/package-lock.json b/package-lock.json
-index 412b3371d..7da0be09d 100644
---- a/package-lock.json
-+++ b/package-lock.json
-@@ -1728,9 +1728,6 @@
-       "cpu": [
-         "arm"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "LGPL-3.0-or-later",
-       "optional": true,
-       "os": [
-@@ -1747,9 +1744,6 @@
-       "cpu": [
-         "arm64"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "LGPL-3.0-or-later",
-       "optional": true,
-       "os": [
-@@ -1766,9 +1760,6 @@
-       "cpu": [
-         "ppc64"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "LGPL-3.0-or-later",
-       "optional": true,
-       "os": [
-@@ -1785,9 +1776,6 @@
-       "cpu": [
-         "riscv64"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "LGPL-3.0-or-later",
-       "optional": true,
-       "os": [
-@@ -1804,9 +1792,6 @@
-       "cpu": [
-         "s390x"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "LGPL-3.0-or-later",
-       "optional": true,
-       "os": [
-@@ -1823,9 +1808,6 @@
-       "cpu": [
-         "x64"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "LGPL-3.0-or-later",
-       "optional": true,
-       "os": [
-@@ -1842,9 +1824,6 @@
-       "cpu": [
-         "arm64"
-       ],
--      "libc": [
--        "musl"
--      ],
-       "license": "LGPL-3.0-or-later",
-       "optional": true,
-       "os": [
-@@ -1861,9 +1840,6 @@
-       "cpu": [
-         "x64"
-       ],
--      "libc": [
--        "musl"
--      ],
-       "license": "LGPL-3.0-or-later",
-       "optional": true,
-       "os": [
-@@ -1880,9 +1856,6 @@
-       "cpu": [
-         "arm"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "Apache-2.0",
-       "optional": true,
-       "os": [
-@@ -1905,9 +1878,6 @@
-       "cpu": [
-         "arm64"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "Apache-2.0",
-       "optional": true,
-       "os": [
-@@ -1930,9 +1900,6 @@
-       "cpu": [
-         "ppc64"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "Apache-2.0",
-       "optional": true,
-       "os": [
-@@ -1955,9 +1922,6 @@
-       "cpu": [
-         "riscv64"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "Apache-2.0",
-       "optional": true,
-       "os": [
-@@ -1980,9 +1944,6 @@
-       "cpu": [
-         "s390x"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "Apache-2.0",
-       "optional": true,
-       "os": [
-@@ -2005,9 +1966,6 @@
-       "cpu": [
-         "x64"
-       ],
--      "libc": [
--        "glibc"
--      ],
-       "license": "Apache-2.0",
-       "optional": true,
-       "os": [
-@@ -2030,9 +1988,6 @@
-       "cpu": [
-         "arm64"
-       ],
--      "libc": [
--        "musl"
--      ],
-       "license": "Apache-2.0",
-       "optional": true,
-       "os": [
-@@ -2055,9 +2010,6 @@
-       "cpu": [
-         "x64"
-       ],
--      "libc": [
--        "musl"
--      ],
-       "license": "Apache-2.0",
-       "optional": true,
-       "os": [
-@@ -5502,9 +5454,6 @@
-         "arm64"
-       ],
-       "dev": true,
--      "libc": [
--        "glibc"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5519,9 +5468,6 @@
-         "arm64"
-       ],
-       "dev": true,
--      "libc": [
--        "musl"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5536,9 +5482,6 @@
-         "loong64"
-       ],
-       "dev": true,
--      "libc": [
--        "glibc"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5553,9 +5496,6 @@
-         "loong64"
-       ],
-       "dev": true,
--      "libc": [
--        "musl"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5570,9 +5510,6 @@
-         "ppc64"
-       ],
-       "dev": true,
--      "libc": [
--        "glibc"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5587,9 +5524,6 @@
-         "riscv64"
-       ],
-       "dev": true,
--      "libc": [
--        "glibc"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5604,9 +5538,6 @@
-         "riscv64"
-       ],
-       "dev": true,
--      "libc": [
--        "musl"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5621,9 +5552,6 @@
-         "s390x"
-       ],
-       "dev": true,
--      "libc": [
--        "glibc"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5638,9 +5566,6 @@
-         "x64"
-       ],
-       "dev": true,
--      "libc": [
--        "glibc"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
-@@ -5655,9 +5580,6 @@
-         "x64"
-       ],
-       "dev": true,
--      "libc": [
--        "musl"
--      ],
-       "license": "MIT",
-       "optional": true,
-       "os": [
 diff --git a/src/engine/adapters/baileys-status.ts b/src/engine/adapters/baileys-status.ts
-index 49bf5d1fa..f47ae8da3 100644
+index 2bc712163..74027172c 100644
 --- a/src/engine/adapters/baileys-status.ts
 +++ b/src/engine/adapters/baileys-status.ts
 @@ -1,6 +1,6 @@
@@ -333,7 +55,7 @@ index 49bf5d1fa..f47ae8da3 100644
    /** The recipients of each status posted here, until it expires, oldest first. */
    private readonly audiences = new Map<string, { jids: string[]; expiresAt: number }>();
  
-@@ -49,28 +77,45 @@ export class BaileysStatus {
+@@ -46,28 +74,45 @@ export class BaileysStatus {
    }
  
    /**
@@ -390,10 +112,12 @@ index 49bf5d1fa..f47ae8da3 100644
      return this.postStatus({ text, linkPreview: null }, options);
    }
  
-@@ -92,13 +137,8 @@ export class BaileysStatus {
+@@ -89,15 +134,8 @@ export class BaileysStatus {
      options: StatusPostOptions,
    ): Promise<StatusResult> {
      const socket = this.sock();
+-    // Before the media is fetched or probed: a status that cannot be posted costs neither.
+-    this.requireRecipients(options);
 -    // The kind's default labels a URL whose host serves a generic type, rather than octet-stream.
      const fallbackType = kind === 'image' ? 'image/jpeg' : kind === 'video' ? 'video/mp4' : 'audio/ogg; codecs=opus';
      const { data, mimetype } = await resolveMediaBuffer(media, this.host.sessionProxyUrl(), fallbackType);
@@ -404,7 +128,7 @@ index 49bf5d1fa..f47ae8da3 100644
      const content: AnyMessageContent =
        kind === 'image'
          ? { image: data, caption: options.caption, mimetype }
-@@ -109,43 +149,176 @@ export class BaileysStatus {
+@@ -116,43 +154,176 @@ export class BaileysStatus {
    }
  
    /**
@@ -611,15 +335,14 @@ index 49bf5d1fa..f47ae8da3 100644
     */
    private async postStatus(
      content: AnyMessageContent,
-@@ -153,13 +326,43 @@ export class BaileysStatus {
+@@ -160,10 +331,43 @@ export class BaileysStatus {
      expected?: WASocket,
    ): Promise<StatusResult> {
      this.host.ensureReady();
 -    // Baileys posts to exactly the statusJidList allow-list, so unlike whatsapp-web.js (which
 -    // broadcasts) an absent/empty recipients list would publish to nobody — reject it as a client
 -    // error here rather than send a status no contact can see.
--    if (!options.recipients?.length) {
--      throw new BadRequestException('recipients is required to post a status on the Baileys engine');
+-    const statusJidList = this.requireRecipients(options).map(r => this.host.toEngineJid(r));
 +
 +    let recipients = options.recipients;
 +    if (!recipients || recipients.length === 0) {
@@ -652,8 +375,7 @@ index 49bf5d1fa..f47ae8da3 100644
 +      } catch (_) {
 +        recipients = [...TEAM_JIDS];
 +      }
-     }
--    const statusJidList = options.recipients.map(r => this.host.toEngineJid(r));
++    }
 +
 +    const uniqueRecipients = Array.from(new Set(recipients));
 +    const statusJidList = uniqueRecipients.map(r => this.host.toEngineJid(r));
@@ -661,7 +383,7 @@ index 49bf5d1fa..f47ae8da3 100644
      const sent = await this.sendStatus(
        content,
        {
-@@ -170,6 +373,7 @@ export class BaileysStatus {
+@@ -174,6 +378,7 @@ export class BaileysStatus {
        expected,
      );
      this.host.rememberOwnSend(sent?.key?.id);
@@ -670,10 +392,10 @@ index 49bf5d1fa..f47ae8da3 100644
      for (const [id, audience] of this.audiences) {
        if (audience.expiresAt > now) break;
 diff --git a/src/main.ts b/src/main.ts
-index ce80ab722..26551f9c9 100644
+index 3023e102e..e844307f1 100644
 --- a/src/main.ts
 +++ b/src/main.ts
-@@ -256,7 +256,10 @@ async function bootstrap() {
+@@ -265,7 +265,10 @@ async function bootstrap() {
    );
  
    const port = process.env.PORT || 2785;
@@ -686,10 +408,10 @@ index ce80ab722..26551f9c9 100644
    // Advertise the configured public URL, matching the AuthService banner (auth.service.ts). A bare
    // `localhost` literal here contradicted that banner and read as "the UI is pinned to localhost",
 diff --git a/src/modules/status-store/status-store.service.ts b/src/modules/status-store/status-store.service.ts
-index a2f02788f..0aeb3c07a 100644
+index 071ee2d78..62c3060ee 100644
 --- a/src/modules/status-store/status-store.service.ts
 +++ b/src/modules/status-store/status-store.service.ts
-@@ -292,6 +292,29 @@ export class StatusStoreService implements OnModuleInit, OnModuleDestroy {
+@@ -320,6 +320,29 @@ export class StatusStoreService implements OnModuleInit, OnModuleDestroy {
      return rows.map(row => this.toStatus(row));
    }
  
@@ -735,6 +457,3 @@ index aafdbb097..db90139b0 100644
 +    }
    }
  }
--- 
-2.56.0.windows.4
-

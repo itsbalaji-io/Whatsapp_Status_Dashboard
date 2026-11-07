@@ -69,10 +69,7 @@ export class BaileysStatus {
   private sock(expected?: WASocket): WASocket {
     this.host.ensureReady();
     const socket = this.host.getSocket();
-    const current = this.host.getSocketOrNull?.() ?? socket;
-    if (expected && (current !== expected || socket !== expected) && socket.sendMessage !== expected.sendMessage) {
-      throw new EngineNotReadyError();
-    }
+    if (expected && socket !== expected) throw new EngineNotReadyError();
     return socket;
   }
 
@@ -146,6 +143,14 @@ export class BaileysStatus {
           ? { video: data, caption: options.caption, mimetype, ...(await describeVideo(data)) }
           : { audio: data, mimetype, ptt: true, ...(await describeAudio(data, true)) };
     return this.postStatus(content, options, socket);
+  }
+
+  /** Baileys posts to exactly the statusJidList allow-list, so a status without recipients is a client error. */
+  private requireRecipients(options: StatusPostOptions): string[] {
+    if (!options.recipients?.length) {
+      throw new BadRequestException('recipients is required to post a status on the Baileys engine');
+    }
+    return options.recipients;
   }
 
   /**
