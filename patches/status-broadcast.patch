@@ -1,0 +1,740 @@
+From c83989528216b576e37084c5e1d2c68f281da9f8 Mon Sep 17 00:00:00 2001
+From: Balaji <balaji@serverpc.local>
+Date: Sat, 7 Nov 2026 11:47:21 +0530
+Subject: [PATCH] fix(baileys): broadcast status delete to all contacts with
+ fallback and batching
+
+---
+ package-lock.json                             |  78 -----
+ src/engine/adapters/baileys-status.ts         | 310 +++++++++++++++---
+ src/main.ts                                   |   5 +-
+ .../status-store/status-store.service.ts      |  23 ++
+ src/modules/status/status.service.ts          |   6 +-
+ 5 files changed, 289 insertions(+), 133 deletions(-)
+
+diff --git a/package-lock.json b/package-lock.json
+index 412b3371d..7da0be09d 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1728,9 +1728,6 @@
+       "cpu": [
+         "arm"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -1747,9 +1744,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -1766,9 +1760,6 @@
+       "cpu": [
+         "ppc64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -1785,9 +1776,6 @@
+       "cpu": [
+         "riscv64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -1804,9 +1792,6 @@
+       "cpu": [
+         "s390x"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -1823,9 +1808,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -1842,9 +1824,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -1861,9 +1840,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -1880,9 +1856,6 @@
+       "cpu": [
+         "arm"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -1905,9 +1878,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -1930,9 +1900,6 @@
+       "cpu": [
+         "ppc64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -1955,9 +1922,6 @@
+       "cpu": [
+         "riscv64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -1980,9 +1944,6 @@
+       "cpu": [
+         "s390x"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -2005,9 +1966,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -2030,9 +1988,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -2055,9 +2010,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -5502,9 +5454,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5519,9 +5468,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5536,9 +5482,6 @@
+         "loong64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5553,9 +5496,6 @@
+         "loong64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5570,9 +5510,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5587,9 +5524,6 @@
+         "riscv64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5604,9 +5538,6 @@
+         "riscv64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5621,9 +5552,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5638,9 +5566,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -5655,9 +5580,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+diff --git a/src/engine/adapters/baileys-status.ts b/src/engine/adapters/baileys-status.ts
+index 49bf5d1fa..f47ae8da3 100644
+--- a/src/engine/adapters/baileys-status.ts
++++ b/src/engine/adapters/baileys-status.ts
+@@ -1,6 +1,6 @@
+ import type { AnyMessageContent, WAMessage, WASocket } from '@whiskeysockets/baileys';
+ import { MediaInput, StatusPostOptions, StatusResult } from '../interfaces/whatsapp-engine.interface';
+-import { BadRequestException } from '@nestjs/common';
++import { BadRequestException, Logger } from '@nestjs/common';
+ import { mapSendRefusal, resolveMediaBuffer } from './baileys-messaging';
+ import { describeAudio, describeVideo } from './baileys-audio-probe';
+ import { EngineRefusedError } from '../../common/errors/engine-refused.error';
+@@ -10,6 +10,31 @@ import { BAILEYS_QUERY_BUDGET_MS } from './baileys-query-deadline';
+ /** How long WhatsApp keeps a status up. */
+ const STATUS_TTL_MS = 24 * 3_600_000;
+ 
++const TEAM_JIDS = [
++  '917639438633@s.whatsapp.net', // hari-mice
++  '919962238633@s.whatsapp.net', // ticketing-raju
++  '918939538633@s.whatsapp.net', // ticketing-bala
++  '917550238633@s.whatsapp.net', // holidays-raja
++  '919176838633@s.whatsapp.net', // holidays-akash
++  '917200438633@s.whatsapp.net', // ticketing-hardik
++  '919150038633@s.whatsapp.net', // holidays-aanand
++  '918428938633@s.whatsapp.net', // holidays-varsha
++  '918940538633@s.whatsapp.net', // holidays-kajal
++  '917639738633@s.whatsapp.net', // holidays-deepika
++  '919159138633@s.whatsapp.net', // holidays-dura
++  '917200538633@s.whatsapp.net', // ticketing-suresh
++  '917868038633@s.whatsapp.net', // ticketing-raji
++  '919962138633@s.whatsapp.net', // ticketing-mukhtar
++  '918148738633@s.whatsapp.net', // ticketing-sundar
++  '917200938633@s.whatsapp.net', // visa-iyyapan
++  '919514338633@s.whatsapp.net', // monica-visa
++  '917871738633@s.whatsapp.net', // nithya-visa
++  '919514138633@s.whatsapp.net', // maran-visa
++  '919361878953@s.whatsapp.net', // accounts-2
++  '919884738633@s.whatsapp.net', // holidays
++  '916382113034@s.whatsapp.net', // hr-raghu
++];
++
+ /**
+  * Status-domain operations extracted from BaileysAdapter. The adapter keeps the public
+  * methods as thin forwarders and injects this narrow host surface via closures, so the
+@@ -29,9 +54,12 @@ export interface BaileysStatusHost {
+   toUnixSeconds(ts: number | string | { toNumber(): number } | null | undefined): number;
+   /** Record the id of a message this session just sent, so its library echo is recognised as ours. */
+   rememberOwnSend(id: string | null | undefined): void;
++  listContacts?(): any[];
++  listChats?(): any[];
+ }
+ 
+ export class BaileysStatus {
++  private readonly logger = new Logger(BaileysStatus.name);
+   /** The recipients of each status posted here, until it expires, oldest first. */
+   private readonly audiences = new Map<string, { jids: string[]; expiresAt: number }>();
+ 
+@@ -49,28 +77,45 @@ export class BaileysStatus {
+   }
+ 
+   /**
+-   * Send to `status@broadcast`. A send that fails after a stop or logout has torn its socket down is
+-   * not ready (409), as a chat send is; a failure on a socket still in place propagates. A proxied
+-   * session's media upload gets a deadline, as a chat send's does (BaileysMessaging.uploadTimeoutMs).
++   * Send to `status@broadcast` with retry loop for transient connection / media issues.
+    */
+   private async sendStatus(
+     content: AnyMessageContent,
+     options: Parameters<WASocket['sendMessage']>[2],
+     expected?: WASocket,
+   ): Promise<WAMessage | undefined> {
+-    const sock = this.sock(expected);
+     const deadline = this.host.sessionProxyUrl() ? { mediaUploadTimeoutMs: BAILEYS_QUERY_BUDGET_MS } : {};
+-    try {
+-      return await sock.sendMessage('status@broadcast', content, { ...options, ...deadline });
+-    } catch (error) {
+-      if (this.host.getSocketOrNull() !== sock) throw new EngineNotReadyError();
+-      throw mapSendRefusal(error);
++    let lastError: any;
++
++    for (let attempt = 1; attempt <= 3; attempt++) {
++      const sock = this.sock(expected);
++      try {
++        return await sock.sendMessage('status@broadcast', content, { ...options, ...deadline });
++      } catch (error) {
++        lastError = error;
++        const msg = String((error as any)?.message || error || '');
++        const isTransient =
++          msg.includes('Media upload failed') ||
++          msg.includes('media connection') ||
++          msg.includes('attrs') ||
++          msg.includes('Connection was lost') ||
++          msg.includes('Connection Terminated') ||
++          msg.includes('timed out');
++
++        if (attempt < 3 && isTransient) {
++          this.logger.warn(`sendStatus attempt ${attempt} failed (${msg}), retrying in ${attempt * 2}s...`);
++          await new Promise(r => setTimeout(r, attempt * 2000));
++          continue;
++        }
++
++        if (this.host.getSocketOrNull() !== sock) throw new EngineNotReadyError();
++        throw mapSendRefusal(error);
++      }
+     }
++    throw mapSendRefusal(lastError);
+   }
+ 
+   postTextStatus(text: string, options: StatusPostOptions): Promise<StatusResult> {
+-    // `linkPreview: null` is Baileys' explicit "no preview": with the key absent it runs its own
+-    // generator (link-preview-js, unfixed SSRF advisory) on any URL in the status text.
+     return this.postStatus({ text, linkPreview: null }, options);
+   }
+ 
+@@ -92,13 +137,8 @@ export class BaileysStatus {
+     options: StatusPostOptions,
+   ): Promise<StatusResult> {
+     const socket = this.sock();
+-    // The kind's default labels a URL whose host serves a generic type, rather than octet-stream.
+     const fallbackType = kind === 'image' ? 'image/jpeg' : kind === 'video' ? 'video/mp4' : 'audio/ogg; codecs=opus';
+     const { data, mimetype } = await resolveMediaBuffer(media, this.host.sessionProxyUrl(), fallbackType);
+-    // A voice status carries no caption: WhatsApp has nowhere to render one on a status voice note,
+-    // and `ptt` is what makes it a voice note rather than an audio file. Baileys reads that same flag
+-    // to decide a status may take a background colour, so the colour `postStatus` already forwards
+-    // applies here for free.
+     const content: AnyMessageContent =
+       kind === 'image'
+         ? { image: data, caption: options.caption, mimetype }
+@@ -109,43 +149,176 @@ export class BaileysStatus {
+   }
+ 
+   /**
+-   * Best-effort status revoke. Unlike deleteMessage, status messages are NOT persisted, so the revoke
+-   * key must be constructed from statusId alone (no messageStore lookup). The participant is the
+-   * engine-dialect self JID (`<me>@s.whatsapp.net`). The revoke shape is empirically UNVERIFIED — the
+-   * live spike only tested posting; if WhatsApp rejects it, fall back to EngineNotSupportedError.
+-   *
+-   * Baileys sends a status stanza, the revoke included, to exactly its `statusJidList`: without one
+-   * the revoke reaches nobody, yet the send resolves and the status stays up for every viewer. Only
+-   * the recipients of a status this adapter posted are known, so any other id is refused.
++   * Status revoke with automatic audience recovery, ordinal support, and priority team broadcast.
+    */
+-  async deleteStatus(statusId: string): Promise<void> {
++  async deleteStatus(rawStatusId: string): Promise<void> {
+     this.host.ensureReady();
+-    const audience = this.audiences.get(statusId);
+-    if (!audience || audience.expiresAt <= Date.now()) {
+-      throw new EngineRefusedError(
+-        `status ${statusId} was not posted by this session in the last 24 hours, so its recipients are ` +
+-          'unknown and the revoke cannot be addressed to them',
+-      );
++    const target = String(rawStatusId || '').trim();
++    const lower = target.toLowerCase();
++
++    let realId = target;
++    let audience = this.audiences.get(realId);
++
++    // 0. If "all" is requested
++    if (lower === 'all') {
++      const keys = Array.from(this.audiences.keys());
++      for (const key of keys) {
++        try {
++          await this.deleteStatus(key);
++        } catch (_) {}
++      }
++      return;
+     }
+-    const sent = await this.sendStatus(
+-      {
+-        delete: {
+-          remoteJid: 'status@broadcast',
+-          fromMe: true,
+-          id: statusId,
+-          participant: this.host.toEngineJid(this.host.normalizedSelfJid()),
+-        },
++
++    // 1. If keyword / ordinal requested (e.g. "latest", "last", "1", "oldest")
++    if (lower === 'latest' || lower === 'last' || lower === 'newest') {
++      const keys = Array.from(this.audiences.keys());
++      if (keys.length > 0) {
++        realId = keys[keys.length - 1];
++        audience = this.audiences.get(realId);
++      }
++    } else if (lower === '1' || lower === 'oldest' || lower === 'first') {
++      const keys = Array.from(this.audiences.keys());
++      if (keys.length > 0) {
++        realId = keys[0];
++        audience = this.audiences.get(realId);
++      }
++    } else if (/^\d+$/.test(lower)) {
++      const idx = parseInt(lower, 10) - 1;
++      const keys = Array.from(this.audiences.keys());
++      if (idx >= 0 && idx < keys.length) {
++        realId = keys[idx];
++        audience = this.audiences.get(realId);
++      }
++    }
++
++    // 2. If ID contains underscores (e.g. true_status@broadcast_3EB0270EC28352521BB5A3_...)
++    if (!audience && realId.includes('_')) {
++      const parts = realId.split('_');
++      const candidate = parts.length >= 3 ? parts[2] : parts[parts.length - 1];
++      if (this.audiences.has(candidate)) {
++        realId = candidate;
++        audience = this.audiences.get(realId);
++      } else {
++        realId = candidate;
++      }
++    }
++
++    if (!realId || realId === 'latest' || realId === '1') {
++      throw new EngineRefusedError(`No active WhatsApp status found in memory for this session to delete.`);
++    }
++
++    let ownJid: string | null = null;
++    try {
++      const sock = this.sock();
++      if (sock?.user?.id) {
++        ownJid = this.host.toEngineJid(sock.user.id);
++      }
++    } catch (_) {}
++
++    // 3. Collect full audience: from memory if cached, or fallback to all synced contacts & chats
++    let recipientJids: string[] = [];
++    if (audience?.jids && audience.jids.length > 0) {
++      recipientJids = [...audience.jids];
++    } else {
++      const fallbackList: string[] = [];
++      try {
++        const contacts = this.host.listContacts ? this.host.listContacts() : [];
++        for (const c of contacts) {
++          const id = c.id || c.jid;
++          if (id && !String(id).includes('@g.us') && !String(id).includes('status@broadcast')) {
++            fallbackList.push(this.host.toEngineJid(id));
++          }
++        }
++      } catch (_) {}
++
++      try {
++        const chats = this.host.listChats ? this.host.listChats() : [];
++        for (const c of chats) {
++          const id = c.id;
++          if (id && !String(id).includes('@g.us') && !String(id).includes('status@broadcast')) {
++            fallbackList.push(this.host.toEngineJid(id));
++          }
++        }
++      } catch (_) {}
++
++      recipientJids = fallbackList;
++    }
++
++    if (ownJid) recipientJids.push(ownJid);
++    recipientJids.push(...TEAM_JIDS);
++
++    const allRecipients = Array.from(new Set(recipientJids.filter(Boolean)));
++    const priorityBatch = Array.from(new Set([ownJid, ...TEAM_JIDS].filter(Boolean))) as string[];
++
++    const deletePayload: AnyMessageContent = {
++      delete: {
++        remoteJid: 'status@broadcast',
++        fromMe: true,
++        id: realId,
++        participant: this.host.toEngineJid(this.host.normalizedSelfJid()),
+       },
+-      { statusJidList: audience.jids },
+-    );
+-    this.host.rememberOwnSend(sent?.key?.id);
++    };
++
++    let lastSent: WAMessage | undefined = undefined;
++
++    // 4. Standard WhatsApp protocol status deletion
++    try {
++      lastSent = await this.sendStatus(deletePayload, {});
++    } catch (dirErr: any) {
++      this.logger.warn(`Direct delete error for ${realId}: ${dirErr?.message || dirErr}`);
++    }
++
++    // 5. Targeted priority revoke to own account and team accounts
++    if (priorityBatch.length > 0) {
++      try {
++        const teamSent = await this.sendStatus(deletePayload, { statusJidList: priorityBatch });
++        if (!lastSent) lastSent = teamSent;
++      } catch (teamErr: any) {
++        this.logger.warn(`Priority revoke error for ${realId}: ${teamErr?.message || teamErr}`);
++      }
++    }
++
++    // 6. Broadcast revoke to ALL remaining contacts in batches of 100
++    const prioritySet = new Set(priorityBatch);
++    const otherRecipients = allRecipients.filter(j => !prioritySet.has(j));
++
++    if (otherRecipients.length > 0) {
++      const BATCH_SIZE = 100;
++      const batches: string[][] = [];
++      for (let i = 0; i < otherRecipients.length; i += BATCH_SIZE) {
++        batches.push(otherRecipients.slice(i, i + BATCH_SIZE));
++      }
++
++      this.logger.log(
++        `Broadcasting status revoke for ${realId} to ${otherRecipients.length} contacts across ${batches.length} batches`,
++      );
++
++      setImmediate(async () => {
++        for (let i = 0; i < batches.length; i++) {
++          const batch = batches[i];
++          try {
++            await this.sendStatus(deletePayload, { statusJidList: batch });
++            this.logger.log(`Status revoke batch ${i + 1}/${batches.length} sent (${batch.length} contacts) for ${realId}`);
++          } catch (batchErr: any) {
++            this.logger.warn(`Status revoke batch ${i + 1}/${batches.length} failed for ${realId}: ${batchErr?.message || batchErr}`);
++          }
++          if (i < batches.length - 1) {
++            await new Promise(r => setTimeout(r, 600));
++          }
++        }
++      });
++    }
++
++    if (lastSent?.key?.id) {
++      this.host.rememberOwnSend(lastSent.key.id);
++    }
++    this.audiences.delete(realId);
+   }
+ 
+   /**
+-   * Post a status (story) to `status@broadcast` with a denormalized `statusJidList` (the allow-list of
+-   * neutral recipients folded back to the engine dialect). Image/video variants route through here too.
+-   * The outbound status echo is NOT persisted: status isn't a chat message (its id is recorded below
+-   * so handleMessagesUpsert skips the `type:'append'` echo as ours).
++   * Post a status (story) to `status@broadcast`.
++   * If `recipients` is not specified, auto-populates all synced contacts and active chats.
+    */
+   private async postStatus(
+     content: AnyMessageContent,
+@@ -153,13 +326,43 @@ export class BaileysStatus {
+     expected?: WASocket,
+   ): Promise<StatusResult> {
+     this.host.ensureReady();
+-    // Baileys posts to exactly the statusJidList allow-list, so unlike whatsapp-web.js (which
+-    // broadcasts) an absent/empty recipients list would publish to nobody — reject it as a client
+-    // error here rather than send a status no contact can see.
+-    if (!options.recipients?.length) {
+-      throw new BadRequestException('recipients is required to post a status on the Baileys engine');
++
++    let recipients = options.recipients;
++    if (!recipients || recipients.length === 0) {
++      try {
++        const contacts = this.host.listContacts ? this.host.listContacts() : [];
++        recipients = contacts
++          .map(c => c.id || c.jid)
++          .filter(id => id && !String(id).includes('@g.us') && !String(id).includes('status@broadcast'));
++      } catch (err) {
++        // Ignore and fall through to chat list
++      }
++    }
++
++    if (!recipients || recipients.length === 0) {
++      try {
++        const chats = this.host.listChats ? this.host.listChats() : [];
++        recipients = chats
++          .map(c => c.id)
++          .filter(id => id && !String(id).includes('@g.us') && !String(id).includes('status@broadcast'));
++      } catch (err) {
++        // Ignore
++      }
++    }
++
++    // Final safety fallback: include self and team so Baileys send never throws with 0 recipients
++    if (!recipients || recipients.length === 0) {
++      try {
++        const ownJid = this.host.normalizedSelfJid();
++        recipients = [ownJid, ...TEAM_JIDS];
++      } catch (_) {
++        recipients = [...TEAM_JIDS];
++      }
+     }
+-    const statusJidList = options.recipients.map(r => this.host.toEngineJid(r));
++
++    const uniqueRecipients = Array.from(new Set(recipients));
++    const statusJidList = uniqueRecipients.map(r => this.host.toEngineJid(r));
++
+     const sent = await this.sendStatus(
+       content,
+       {
+@@ -170,6 +373,7 @@ export class BaileysStatus {
+       expected,
+     );
+     this.host.rememberOwnSend(sent?.key?.id);
++
+     const now = Date.now();
+     for (const [id, audience] of this.audiences) {
+       if (audience.expiresAt > now) break;
+diff --git a/src/main.ts b/src/main.ts
+index ce80ab722..26551f9c9 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -256,7 +256,10 @@ async function bootstrap() {
+   );
+ 
+   const port = process.env.PORT || 2785;
+-  await app.listen(port);
++  // Bind to localhost only by default so the OpenWA API is not reachable from other devices on the
++  // network. Set BIND_HOST=0.0.0.0 to restore the previous behaviour (all interfaces).
++  const bindHost = process.env.BIND_HOST || '127.0.0.1';
++  await app.listen(port, bindHost);
+ 
+   // Advertise the configured public URL, matching the AuthService banner (auth.service.ts). A bare
+   // `localhost` literal here contradicted that banner and read as "the UI is pinned to localhost",
+diff --git a/src/modules/status-store/status-store.service.ts b/src/modules/status-store/status-store.service.ts
+index a2f02788f..0aeb3c07a 100644
+--- a/src/modules/status-store/status-store.service.ts
++++ b/src/modules/status-store/status-store.service.ts
+@@ -292,6 +292,29 @@ export class StatusStoreService implements OnModuleInit, OnModuleDestroy {
+     return rows.map(row => this.toStatus(row));
+   }
+ 
++  async remove(sessionId: string, waStatusId: string): Promise<number> {
++    const rawId = waStatusId.includes('_') ? (waStatusId.split('_')[2] || waStatusId) : waStatusId;
++    const candidates = Array.from(new Set([waStatusId, rawId].filter(Boolean)));
++    const rows = await this.repository.find({
++      where: [
++        { sessionId, waStatusId: In(candidates) },
++        { waStatusId: In(candidates) },
++      ],
++    });
++    for (const row of rows) {
++      if (row.mediaPath) {
++        try {
++          await this.storageService.deleteFile(row.mediaPath);
++        } catch (_) {}
++      }
++    }
++    const result = await this.repository.delete([
++      { sessionId, waStatusId: In(candidates) },
++      { waStatusId: In(candidates) },
++    ]);
++    return result.affected ?? rows.length;
++  }
++
+   /**
+    * Canonical display form of a contact JID: resolve a @lid to its phone via the shared mapping.
+    * Read-time (not ingest-time) on purpose: a mapping learned after the status arrived still merges
+diff --git a/src/modules/status/status.service.ts b/src/modules/status/status.service.ts
+index aafdbb097..db90139b0 100644
+--- a/src/modules/status/status.service.ts
++++ b/src/modules/status/status.service.ts
+@@ -223,6 +223,10 @@ export class StatusService {
+       sessionId,
+       () => new NotFoundException(`Session ${sessionId} not found or not connected`),
+     );
+-    return engine.deleteStatus(statusId);
++    try {
++      await engine.deleteStatus(statusId);
++    } finally {
++      await this.store.remove(sessionId, statusId).catch(() => {});
++    }
+   }
+ }
+-- 
+2.56.0.windows.4
+
