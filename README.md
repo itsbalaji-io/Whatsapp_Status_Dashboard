@@ -94,6 +94,9 @@ http://localhost:3000
 │   ├── baileys-status.js
 │   ├── Client.js
 │   └── messages-send.js
+├── scripts/                    # Windows launcher & OpenWA auto-patcher scripts
+│   ├── start-openwa-dashboard.bat
+│   └── update-and-patch-openwa.bat
 ├── web-app/
 │   ├── Dockerfile              # Lightweight Node.js 20 Alpine container
 │   ├── package.json
