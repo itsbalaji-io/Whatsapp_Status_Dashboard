@@ -631,7 +631,7 @@ function initOpenWASocket() {
       openwaSocket.emit('message', {
         type: 'subscribe',
         sessionId: '*',
-        events: ['*']
+        events: ['*', 'message.receipt']
       });
     });
 
