@@ -554,7 +554,7 @@ class StatusViewersStore {
     return id.includes('_') ? (id.split('_')[2] || id) : id;
   }
 
-  recordViewer(statusId, participantJid, timestamp, contactName = '') {
+  recordViewer(statusId, participantJid, timestamp, contactName = '', resolvedPhone = '') {
     if (!statusId || !participantJid) return;
     const rawId = this.normalizeId(statusId);
     const key = rawId || statusId;
@@ -563,18 +563,33 @@ class StatusViewersStore {
       this.data[key] = { count: 0, viewers: [] };
     }
 
-    const phone = (participantJid || '').replace(/\D/g, '');
-    const alreadyExists = this.data[key].viewers.some(v => v.jid === participantJid || (phone && v.phone === phone));
+    const phone = resolvedPhone || (participantJid || '').replace(/\D/g, '');
+    const isLid = (participantJid || '').includes('@lid');
+    const existingIndex = this.data[key].viewers.findIndex(v => v.jid === participantJid || (phone && !isLid && v.phone === phone));
 
     const readAt = timestamp
       ? new Date(typeof timestamp === 'number' && timestamp < 10000000000 ? timestamp * 1000 : timestamp).toISOString()
       : new Date().toISOString();
 
-    if (!alreadyExists) {
+    const displayName = contactName || formatPhone(phone) || 'WhatsApp Contact';
+
+    if (existingIndex !== -1) {
+      const v = this.data[key].viewers[existingIndex];
+      let changed = false;
+      if (contactName && v.name !== contactName && (!v.name || v.name.startsWith('+') || v.name === 'WhatsApp Contact')) {
+        v.name = contactName;
+        changed = true;
+      }
+      if (resolvedPhone && v.phone !== resolvedPhone) {
+        v.phone = resolvedPhone;
+        changed = true;
+      }
+      if (changed) this.save();
+    } else {
       this.data[key].viewers.unshift({
         jid: participantJid,
         phone: phone || participantJid,
-        name: contactName || formatPhone(phone) || 'WhatsApp Contact',
+        name: displayName,
         readAt
       });
       this.data[key].count = this.data[key].viewers.length;
@@ -628,6 +643,71 @@ async function refreshContactsCache() {
 setTimeout(refreshContactsCache, 3000);
 setInterval(refreshContactsCache, 10 * 60 * 1000);
 
+// LID to Phone & Friendly Name resolution cache
+const lidResolutionCache = new Map();
+
+async function resolveContact(participantJid, sessionId) {
+  if (!participantJid) return { phone: '', name: '' };
+
+  const isLid = participantJid.includes('@lid');
+  if (!isLid) {
+    const phone = participantJid.replace(/\D/g, '');
+    const name = contactsCache.get(phone) || contactsCache.get(participantJid) || '';
+    return { phone, name };
+  }
+
+  if (lidResolutionCache.has(participantJid)) {
+    return lidResolutionCache.get(participantJid);
+  }
+
+  const cleanLid = participantJid.includes('@') ? participantJid : `${participantJid}@lid`;
+
+  // Candidate sessions: event session first, then other ready sessions
+  const candidateSessions = [];
+  if (sessionId) candidateSessions.push(sessionId);
+  try {
+    const sRes = await openwaFetch('/api/sessions');
+    if (sRes.ok) {
+      const list = await sRes.json();
+      const ready = (Array.isArray(list) ? list : []).filter(s => s.status === 'ready').map(s => s.id);
+      for (const sid of ready) {
+        if (!candidateSessions.includes(sid)) candidateSessions.push(sid);
+      }
+    }
+  } catch (_) {}
+
+  for (const sid of candidateSessions) {
+    try {
+      const res = await openwaFetch(`/api/sessions/${sid}/contacts/${encodeURIComponent(cleanLid)}/phone`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.phone) {
+          const phone = String(data.phone).replace(/\D/g, '');
+          let name = contactsCache.get(phone) || '';
+          if (!name) {
+            try {
+              const cRes = await openwaFetch(`/api/sessions/${sid}/contacts/${phone}@c.us`);
+              if (cRes.ok) {
+                const cData = await cRes.json();
+                if (cData && cData.name) {
+                  name = cData.name;
+                  contactsCache.set(phone, name);
+                }
+              }
+            } catch (_) {}
+          }
+          const result = { phone, name: name || formatPhone(phone) };
+          lidResolutionCache.set(participantJid, result);
+          lidResolutionCache.set(cleanLid, result);
+          return result;
+        }
+      }
+    } catch (_) {}
+  }
+
+  return { phone: '', name: '' };
+}
+
 // MARK: - OpenWA Realtime Events Gateway (Socket.IO Client)
 const { io } = require('socket.io-client');
 let openwaSocket = null;
@@ -653,9 +733,9 @@ function initOpenWASocket() {
       });
     });
 
-    function processInboundEvent(eventName, eventData) {
+    function processInboundEvent(eventName, eventData, sessionId) {
       if (!eventName || !eventData) return;
-      if (eventName === 'message.receipt') handleInboundReceipt(eventData);
+      if (eventName === 'message.receipt') handleInboundReceipt(eventData, sessionId);
       if (eventName === 'message.revoked') handleInboundRevoke(eventData);
     }
 
@@ -672,9 +752,9 @@ function initOpenWASocket() {
     openwaSocket.on('message', (frame) => {
       if (!frame) return;
       if (frame.type === 'event' && frame.payload) {
-        processInboundEvent(frame.payload.event, frame.payload.data);
+        processInboundEvent(frame.payload.event, frame.payload.data, frame.payload.sessionId);
       } else if (frame.event) {
-        processInboundEvent(frame.event, frame.data || frame.payload);
+        processInboundEvent(frame.event, frame.data || frame.payload, frame.sessionId);
       }
     });
 
@@ -690,16 +770,17 @@ function initOpenWASocket() {
   }
 }
 
-function handleInboundReceipt(data) {
+async function handleInboundReceipt(data, sessionId) {
   if (!data) return;
   const chatId = data.chatId || '';
   if (chatId === 'status@broadcast' || chatId.includes('broadcast')) {
     if (data.status === 'read' || data.status === 'played') {
       const statusId = data.messageId || data.id;
       const participant = data.participant || data.from || '';
-      const phone = participant.replace(/\D/g, '');
-      const name = contactsCache.get(phone) || contactsCache.get(participant) || '';
-      statusViewersStore.recordViewer(statusId, participant, data.timestamp, name);
+      const resolved = await resolveContact(participant, sessionId);
+      const phone = resolved.phone || participant.replace(/\D/g, '');
+      const name = resolved.name || contactsCache.get(phone) || contactsCache.get(participant) || '';
+      statusViewersStore.recordViewer(statusId, participant, data.timestamp, name, resolved.phone);
       console.log(`👁️ Status viewer recorded: ${statusId} by ${name || phone || participant} (ts: ${data.timestamp})`);
     }
   }
@@ -1701,9 +1782,27 @@ app.post('/api/live-statuses/clear-all', async (req, res) => {
 });
 
 // Viewers & Reader Receipts Insights Endpoint
-app.get('/api/live-statuses/:statusId/viewers', (req, res) => {
+app.get('/api/live-statuses/:statusId/viewers', async (req, res) => {
   const { statusId } = req.params;
   const vData = statusViewersStore.getViewers(statusId);
+  if (vData && Array.isArray(vData.viewers)) {
+    let modified = false;
+    for (const v of vData.viewers) {
+      const isLid = (v.jid && v.jid.includes('@lid')) || (v.phone && v.phone.length > 12 && !v.phone.startsWith('91'));
+      const isMissingName = !v.name || v.name.startsWith('+') || v.name === 'WhatsApp Contact';
+      if (isLid && isMissingName) {
+        const resolved = await resolveContact(v.jid);
+        if (resolved && resolved.phone) {
+          v.phone = resolved.phone;
+          v.name = resolved.name || formatPhone(resolved.phone);
+          modified = true;
+        }
+      }
+    }
+    if (modified) {
+      statusViewersStore.save();
+    }
+  }
   res.json({
     statusId,
     count: vData.count || 0,
