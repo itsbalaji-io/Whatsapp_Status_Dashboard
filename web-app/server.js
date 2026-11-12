@@ -504,6 +504,19 @@ class RemovedStatusStore {
 
 const removedStatusStore = new RemovedStatusStore();
 
+// Phone Formatter Helper
+function formatPhone(phone) {
+  if (!phone) return '';
+  const clean = String(phone).replace(/\D/g, '');
+  if (clean.length === 12 && clean.startsWith('91')) {
+    return `+${clean.slice(0, 2)} ${clean.slice(2, 7)} ${clean.slice(7)}`;
+  }
+  if (clean.length === 10) {
+    return `+91 ${clean.slice(0, 5)} ${clean.slice(5)}`;
+  }
+  return clean ? `+${clean}` : '';
+}
+
 // MARK: - Status Viewers Store (Reader Receipts & Insights)
 const STATUS_VIEWERS_FILE = path.join(DATA_DIR, 'status-viewers.json');
 
@@ -574,7 +587,12 @@ class StatusViewersStore {
   getViewers(statusId) {
     if (!statusId) return { count: 0, viewers: [] };
     const rawId = this.normalizeId(statusId);
-    return this.data[rawId] || this.data[statusId] || { count: 0, viewers: [] };
+    if (this.data[rawId]) return this.data[rawId];
+    if (this.data[statusId]) return this.data[statusId];
+    // Partial substring fallback
+    const matchedKey = Object.keys(this.data).find(k => k === rawId || k.includes(rawId) || rawId.includes(k));
+    if (matchedKey && this.data[matchedKey]) return this.data[matchedKey];
+    return { count: 0, viewers: [] };
   }
 }
 
@@ -635,6 +653,12 @@ function initOpenWASocket() {
       });
     });
 
+    function processInboundEvent(eventName, eventData) {
+      if (!eventName || !eventData) return;
+      if (eventName === 'message.receipt') handleInboundReceipt(eventData);
+      if (eventName === 'message.revoked') handleInboundRevoke(eventData);
+    }
+
     openwaSocket.on('message.receipt', (data) => {
       handleInboundReceipt(data);
     });
@@ -643,15 +667,19 @@ function initOpenWASocket() {
       handleInboundRevoke(data);
     });
 
-    // Also handle when OpenWA broadcasts as 'message' or 'event'
+    // OpenWA sends frames over the 'message' event channel:
+    // { type: 'event', payload: { event: 'message.receipt', sessionId: '...', data: { ... } }, timestamp: '...' }
     openwaSocket.on('message', (frame) => {
-      if (frame && frame.event === 'message.receipt') handleInboundReceipt(frame.data);
-      if (frame && frame.event === 'message.revoked') handleInboundRevoke(frame.data);
+      if (!frame) return;
+      if (frame.type === 'event' && frame.payload) {
+        processInboundEvent(frame.payload.event, frame.payload.data);
+      } else if (frame.event) {
+        processInboundEvent(frame.event, frame.data || frame.payload);
+      }
     });
 
     openwaSocket.on('event', (eventName, data) => {
-      if (eventName === 'message.receipt') handleInboundReceipt(data);
-      if (eventName === 'message.revoked') handleInboundRevoke(data);
+      processInboundEvent(eventName, data);
     });
 
     openwaSocket.on('connect_error', (err) => {
@@ -672,6 +700,7 @@ function handleInboundReceipt(data) {
       const phone = participant.replace(/\D/g, '');
       const name = contactsCache.get(phone) || contactsCache.get(participant) || '';
       statusViewersStore.recordViewer(statusId, participant, data.timestamp, name);
+      console.log(`👁️ Status viewer recorded: ${statusId} by ${name || phone || participant} (ts: ${data.timestamp})`);
     }
   }
 }
