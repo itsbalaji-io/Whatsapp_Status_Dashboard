@@ -1671,6 +1671,11 @@ function renderHistoryList() {
                 <span class="badge badge-user-log" title="Logged by ${escapeHtml(creator)}">👤 ${escapeHtml(creator)}</span>
                 ${item.repeatDaily ? `<span class="badge badge-phone-live">🔁 Daily Drip</span>` : ''}
                 ${item.autoExpireHours ? `<span class="badge badge-flash-sale">⚡ Flash (${item.autoExpireHours}h)</span>` : ''}
+                ${item.campaignViewersCount > 0 ? `
+                  <button type="button" class="btn-viewers-badge" style="cursor: pointer;" onclick="event.stopPropagation(); openViewersModal('${passedResults[0]?.statusId || item.id}')" title="Click to view total campaign viewer insights across all accounts">
+                    👁️ ${item.campaignViewersCount} Campaign Views
+                  </button>
+                ` : ''}
               </div>
               <div class="history-meta">
                 <span>${timeText}</span>
@@ -1702,8 +1707,8 @@ function renderHistoryList() {
                   <span>${sr.name || sr.sessionId}</span>
                   <div style="display: flex; align-items: center; gap: 8px;">
                     ${sr.statusId ? `
-                      <button type="button" class="btn-viewers-badge" onclick="event.stopPropagation(); openViewersModal('${sr.statusId}')">
-                        👁️ Viewers
+                      <button type="button" class="btn-viewers-badge" onclick="event.stopPropagation(); openViewersModal('${sr.statusId}')" title="View receipts for ${sr.name || sr.sessionId}">
+                        👁️ ${sr.viewersCount || 0}
                       </button>
                     ` : ''}
                     <span style="color: ${sr.status === 'passed' ? 'var(--accent-wa)' : sr.status === 'revoked' ? 'var(--accent-orange)' : 'var(--accent-red)'}; font-weight: 700;">
@@ -1985,8 +1990,9 @@ function renderLiveStatusesGrid() {
               ` : `
                 <span>Expires in ${expiresHours}h</span>
               `}
-              <button type="button" class="btn-viewers-badge" onclick="event.stopPropagation(); openViewersModal('${st.id}')" title="Click to view reader receipts">
-                👁️ ${st.viewersCount || 0}
+              <button type="button" class="btn-viewers-badge" onclick="event.stopPropagation(); openViewersModal('${st.id}')" title="This Account: ${st.viewersCount || 0} views | Total Across All Accounts: ${st.campaignViewersCount || st.viewersCount || 0}">
+                👁️ ${st.broadcastGroupCount > 1 ? (st.campaignViewersCount || st.viewersCount || 0) : (st.viewersCount || 0)}
+                ${st.broadcastGroupCount > 1 ? `<span style="font-size: 10px; opacity: 0.85; margin-left: 2px;">(Total)</span>` : ''}
               </button>
             </div>
           </div>
@@ -2428,18 +2434,74 @@ window.openViewersModal = async function(statusId) {
 
   const container = document.getElementById('viewersListContainer');
   const countBadge = document.getElementById('viewersModalCountBadge');
+  const subtitle = document.getElementById('viewersModalSubtitle');
   const searchInput = document.getElementById('viewersSearchInput');
+  const tabsContainer = document.getElementById('viewersModalTabs');
+
   container.innerHTML = `<div style="padding: 30px; text-align: center; color: var(--text-muted);">Fetching viewer insights...</div>`;
+  if (tabsContainer) {
+    tabsContainer.style.display = 'none';
+    tabsContainer.innerHTML = '';
+  }
 
   try {
-    const res = await fetch(`/api/live-statuses/${encodeURIComponent(statusId)}/viewers`);
+    const res = await fetch(`/api/live-statuses/${encodeURIComponent(statusId)}/viewers`, { credentials: 'include' });
     const data = await res.json();
-    const viewers = data.viewers || [];
-    countBadge.textContent = viewers.length;
+
+    const isCampaign = !!(data.isBroadcastCampaign && data.campaignSessions && data.campaignSessions.length > 1);
+    const allViewers = isCampaign ? (data.campaignAllViewers || []) : (data.viewers || []);
+    const totalCount = isCampaign ? (data.campaignTotalCount || allViewers.length) : (data.count || (data.viewers ? data.viewers.length : 0));
+
+    countBadge.textContent = totalCount;
+    if (subtitle) {
+      if (isCampaign) {
+        subtitle.innerHTML = `Showing <strong>${totalCount}</strong> viewers across <strong>${data.campaignSessions.length} accounts</strong>`;
+      } else {
+        subtitle.textContent = `Real-time reader receipts from WhatsApp`;
+      }
+    }
+
+    let activeFilter = 'all';
+
+    // Render filter tabs if part of a multi-session campaign
+    if (isCampaign && tabsContainer) {
+      tabsContainer.style.display = 'flex';
+      let tabsHtml = `
+        <button type="button" class="viewer-tab-btn active" data-sid="all">
+          🌐 All Accounts (${totalCount})
+        </button>
+      `;
+      for (const s of data.campaignSessions) {
+        tabsHtml += `
+          <button type="button" class="viewer-tab-btn" data-sid="${s.sessionId}">
+            👤 ${escapeHtml(s.sessionName)} (${s.count || 0})
+          </button>
+        `;
+      }
+      tabsContainer.innerHTML = tabsHtml;
+
+      const tabBtns = tabsContainer.querySelectorAll('.viewer-tab-btn');
+      tabBtns.forEach(btn => {
+        btn.onclick = () => {
+          tabBtns.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          activeFilter = btn.getAttribute('data-sid');
+          renderList(searchInput ? searchInput.value : '');
+        };
+      });
+    }
 
     const renderList = (filterQuery = '') => {
       const q = filterQuery.toLowerCase().trim();
-      const filtered = viewers.filter(v => {
+
+      // Filter by active session tab
+      let sourceList = allViewers;
+      if (isCampaign && activeFilter !== 'all') {
+        const targetSession = data.campaignSessions.find(s => s.sessionId === activeFilter);
+        sourceList = targetSession ? (targetSession.viewers || []) : [];
+      }
+
+      const filtered = sourceList.filter(v => {
         if (!q) return true;
         return (v.name && v.name.toLowerCase().includes(q)) || (v.phone && v.phone.includes(q));
       });
@@ -2452,12 +2514,16 @@ window.openViewersModal = async function(statusId) {
       container.innerHTML = filtered.map(v => {
         const initial = (v.name || 'W').charAt(0).toUpperCase();
         const timeAgo = formatTimeAgo(v.readAt);
+        const seenViaText = v.seenVia || v.sessionName || '';
         return `
           <div class="viewer-row-item">
             <div style="display: flex; align-items: center; min-width: 0; flex: 1;">
               <div class="viewer-avatar">${initial}</div>
               <div class="viewer-meta">
-                <div class="viewer-name">${escapeHtml(v.name || formatPhone(v.phone))}</div>
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                  <span class="viewer-name">${escapeHtml(v.name || formatPhone(v.phone))}</span>
+                  ${seenViaText ? `<span class="badge badge-phone-live" style="font-size: 10px; padding: 1px 6px;">via ${escapeHtml(seenViaText)}</span>` : ''}
+                </div>
                 <div class="viewer-phone">📱 ${formatPhone(v.phone)}</div>
               </div>
             </div>

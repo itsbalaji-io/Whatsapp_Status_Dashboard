@@ -572,7 +572,7 @@ class StatusViewersStore {
     return id.includes('_') ? (id.split('_')[2] || id) : id;
   }
 
-  recordViewer(statusId, participantJid, timestamp, contactName = '', resolvedPhone = '') {
+  recordViewer(statusId, participantJid, timestamp, contactName = '', resolvedPhone = '', sessionId = '', sessionName = '') {
     if (!statusId || !participantJid) return;
     const rawId = this.normalizeId(statusId);
     const key = rawId || statusId;
@@ -602,18 +602,28 @@ class StatusViewersStore {
         v.phone = resolvedPhone;
         changed = true;
       }
+      if (sessionId && !v.sessionId) {
+        v.sessionId = sessionId;
+        changed = true;
+      }
+      if (sessionName && !v.sessionName) {
+        v.sessionName = sessionName;
+        changed = true;
+      }
       if (changed) this.save();
     } else {
       this.data[key].viewers.unshift({
         jid: participantJid,
         phone: phone || participantJid,
         name: displayName,
-        readAt
+        readAt,
+        sessionId: sessionId || '',
+        sessionName: sessionName || ''
       });
       this.data[key].count = this.data[key].viewers.length;
       this.data[key].lastViewedAt = readAt;
       this.save();
-      console.log(`👁️ New status viewer recorded for ${key}: ${contactName || phone} (${this.data[key].count} total)`);
+      console.log(`👁️ New status viewer recorded for ${key}: ${displayName} (${phone}) on ${sessionName || sessionId || 'session'} (${this.data[key].count} total)`);
     }
   }
 
@@ -745,14 +755,41 @@ function initOpenWASocket() {
       reconnectionAttempts: Infinity
     });
 
-    openwaSocket.on('connect', () => {
-      console.log('📡 Connected to OpenWA Realtime Events Gateway');
+    async function subscribeAllSessions() {
+      if (!openwaSocket || !openwaSocket.connected) return;
+      // 1. Wildcard subscription
       openwaSocket.emit('message', {
         type: 'subscribe',
         sessionId: '*',
-        events: ['*', 'message.receipt']
+        events: ['*', 'message.receipt', 'message.revoked', 'status.received']
       });
+
+      // 2. Explicit subscriptions per ready session
+      try {
+        const sRes = await openwaFetch('/api/sessions');
+        if (sRes.ok) {
+          const sessions = await sRes.json();
+          const ready = (Array.isArray(sessions) ? sessions : []).filter(s => s.status === 'ready');
+          for (const s of ready) {
+            openwaSocket.emit('message', {
+              type: 'subscribe',
+              sessionId: s.id,
+              events: ['*', 'message.receipt', 'message.revoked', 'status.received']
+            });
+          }
+        }
+      } catch (err) {
+        // quiet
+      }
+    }
+
+    openwaSocket.on('connect', () => {
+      console.log('📡 Connected to OpenWA Realtime Events Gateway');
+      subscribeAllSessions();
     });
+
+    // Re-check and refresh subscriptions periodically
+    setInterval(subscribeAllSessions, 30000);
 
     function processInboundEvent(eventName, eventData, sessionId) {
       if (!eventName || !eventData) return;
@@ -761,7 +798,7 @@ function initOpenWASocket() {
     }
 
     openwaSocket.on('message.receipt', (data) => {
-      handleInboundReceipt(data);
+      handleInboundReceipt(data, data?.sessionId);
     });
 
     openwaSocket.on('message.revoked', (data) => {
@@ -780,7 +817,7 @@ function initOpenWASocket() {
     });
 
     openwaSocket.on('event', (eventName, data) => {
-      processInboundEvent(eventName, data);
+      processInboundEvent(eventName, data, data?.sessionId);
     });
 
     openwaSocket.on('connect_error', (err) => {
@@ -798,11 +835,34 @@ async function handleInboundReceipt(data, sessionId) {
     if (data.status === 'read' || data.status === 'played') {
       const statusId = data.messageId || data.id;
       const participant = data.participant || data.from || '';
-      const resolved = await resolveContact(participant, sessionId);
+
+      // Infer session ID if not passed
+      let effectiveSessionId = sessionId;
+      let sessionName = '';
+      if (!effectiveSessionId) {
+        for (const hItem of historyStore.items) {
+          const matchSr = (hItem.sessionResults || []).find(sr => sr.statusId === statusId);
+          if (matchSr && matchSr.sessionId) {
+            effectiveSessionId = matchSr.sessionId;
+            sessionName = matchSr.name || '';
+            break;
+          }
+        }
+      } else {
+        for (const hItem of historyStore.items) {
+          const matchSr = (hItem.sessionResults || []).find(sr => sr.sessionId === effectiveSessionId);
+          if (matchSr) {
+            sessionName = matchSr.name || '';
+            break;
+          }
+        }
+      }
+
+      const resolved = await resolveContact(participant, effectiveSessionId);
       const phone = resolved.phone || participant.replace(/\D/g, '');
       const name = resolved.name || contactsCache.get(phone) || contactsCache.get(participant) || '';
-      statusViewersStore.recordViewer(statusId, participant, data.timestamp, name, resolved.phone);
-      console.log(`👁️ Status viewer recorded: ${statusId} by ${name || phone || participant} (ts: ${data.timestamp})`);
+      statusViewersStore.recordViewer(statusId, participant, data.timestamp, name, resolved.phone, effectiveSessionId, sessionName);
+      console.log(`👁️ Status viewer recorded: ${statusId} by ${name || phone || participant} on ${sessionName || effectiveSessionId || 'session'} (ts: ${data.timestamp})`);
     }
   }
 }
@@ -1585,6 +1645,53 @@ app.get('/api/live-statuses', async (req, res) => {
       item.broadcastGroupCount = broadcastGroupSessions.length;
     }
 
+    // Compute aggregated campaign viewers across all accounts in broadcast group
+    for (const item of allResults) {
+      if (item.broadcastGroupSessions && item.broadcastGroupSessions.length > 0) {
+        const uniqueViewersMap = new Map();
+        const sessionBreakdown = [];
+
+        for (const s of item.broadcastGroupSessions) {
+          const sisterVData = statusViewersStore.getViewers(s.statusId);
+          const sName = s.sessionName || s.sessionId;
+          sessionBreakdown.push({
+            sessionId: s.sessionId,
+            sessionName: sName,
+            phone: s.phone,
+            statusId: s.statusId,
+            viewersCount: sisterVData.count || 0
+          });
+
+          for (const v of (sisterVData.viewers || [])) {
+            const vKey = (v.phone && v.phone.length > 5) ? v.phone : (v.jid || v.name);
+            if (!uniqueViewersMap.has(vKey)) {
+              uniqueViewersMap.set(vKey, {
+                ...v,
+                seenVia: sName,
+                seenViaSessionId: s.sessionId
+              });
+            }
+          }
+        }
+
+        const combinedViewers = Array.from(uniqueViewersMap.values());
+        combinedViewers.sort((a, b) => new Date(b.readAt || 0) - new Date(a.readAt || 0));
+        item.campaignViewersCount = combinedViewers.length;
+        item.campaignViewers = combinedViewers;
+        item.campaignSessions = sessionBreakdown;
+      } else {
+        item.campaignViewersCount = item.viewersCount || 0;
+        item.campaignViewers = item.viewers || [];
+        item.campaignSessions = [{
+          sessionId: item.sessionId,
+          sessionName: item.sessionName,
+          phone: item.phone,
+          statusId: item.id,
+          viewersCount: item.viewersCount || 0
+        }];
+      }
+    }
+
     allResults.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     res.json({ statuses: allResults });
   } catch (err) {
@@ -1802,20 +1909,37 @@ app.post('/api/live-statuses/clear-all', async (req, res) => {
   }
 });
 
-// Viewers & Reader Receipts Insights Endpoint
+// Viewers & Reader Receipts Insights Endpoint (with Multi-Account Campaign Support)
 app.get('/api/live-statuses/:statusId/viewers', async (req, res) => {
   const { statusId } = req.params;
-  const vData = statusViewersStore.getViewers(statusId);
+  const isHistoryItem = statusId.startsWith('item-');
 
-  // Identify owner session for this status if available
-  let ownerSessionId = null;
-  for (const hItem of historyStore.items) {
-    const matchSr = (hItem.sessionResults || []).find(sr => sr.statusId === statusId);
-    if (matchSr && matchSr.sessionId) {
-      ownerSessionId = matchSr.sessionId;
-      break;
+  let matchedHistoryItem = null;
+  let sisterSessions = [];
+
+  if (isHistoryItem) {
+    matchedHistoryItem = historyStore.items.find(h => h.id === statusId);
+    if (matchedHistoryItem && matchedHistoryItem.sessionResults) {
+      sisterSessions = matchedHistoryItem.sessionResults.filter(sr => sr.statusId && sr.status !== 'revoked');
+    }
+  } else {
+    for (const hItem of historyStore.items) {
+      if (hItem.sessionResults) {
+        const match = hItem.sessionResults.find(sr => sr.statusId === statusId || (statusId && sr.statusId && (sr.statusId.includes(statusId) || statusId.includes(sr.statusId))));
+        if (match) {
+          matchedHistoryItem = hItem;
+          sisterSessions = hItem.sessionResults.filter(sr => sr.statusId && sr.status !== 'revoked');
+          break;
+        }
+      }
     }
   }
+
+  // Direct viewers for this specific status
+  const vData = isHistoryItem ? { count: 0, viewers: [] } : statusViewersStore.getViewers(statusId);
+
+  // Identify owner session for this status if available
+  let ownerSessionId = sisterSessions.find(sr => sr.statusId === statusId)?.sessionId || null;
 
   if (vData && Array.isArray(vData.viewers)) {
     let modified = false;
@@ -1835,12 +1959,98 @@ app.get('/api/live-statuses/:statusId/viewers', async (req, res) => {
       statusViewersStore.save();
     }
   }
+
+  // Build Campaign Viewers & Session Breakdown
+  const uniqueCampaignViewersMap = new Map();
+  const campaignSessions = [];
+
+  if (sisterSessions.length > 0) {
+    for (const sr of sisterSessions) {
+      const sVData = statusViewersStore.getViewers(sr.statusId);
+      const sName = sr.name || sr.sessionId;
+
+      if (sVData && Array.isArray(sVData.viewers)) {
+        let sisterModified = false;
+        for (const v of sVData.viewers) {
+          const isLid = (v.jid && v.jid.includes('@lid')) || (v.phone && v.phone.length > 12 && !v.phone.startsWith('91'));
+          const isMissingName = !v.name || v.name.startsWith('+') || v.name === 'WhatsApp Contact' || (v.phone && v.name.includes(v.phone));
+          if (isLid || isMissingName) {
+            const resolved = await resolveContact(v.jid, sr.sessionId);
+            if (resolved && resolved.phone) {
+              v.phone = resolved.phone;
+              v.name = resolved.name || formatPhone(resolved.phone);
+              sisterModified = true;
+            }
+          }
+
+          const vKey = (v.phone && v.phone.length > 5) ? v.phone : (v.jid || v.name);
+          if (!uniqueCampaignViewersMap.has(vKey)) {
+            uniqueCampaignViewersMap.set(vKey, {
+              ...v,
+              seenVia: sName,
+              seenViaSessionId: sr.sessionId
+            });
+          }
+        }
+        if (sisterModified) {
+          statusViewersStore.save();
+        }
+      }
+
+      campaignSessions.push({
+        sessionId: sr.sessionId,
+        sessionName: sName,
+        phone: sr.phone || '',
+        statusId: sr.statusId,
+        count: sVData.count || 0,
+        viewers: sVData.viewers || []
+      });
+    }
+  }
+
+  const campaignAllViewers = Array.from(uniqueCampaignViewersMap.values());
+  campaignAllViewers.sort((a, b) => new Date(b.readAt || 0) - new Date(a.readAt || 0));
+
   res.json({
     statusId,
     count: vData.count || 0,
     lastViewedAt: vData.lastViewedAt || null,
-    viewers: vData.viewers || []
+    viewers: vData.viewers || [],
+    isBroadcastCampaign: sisterSessions.length > 1,
+    campaignTotalCount: campaignAllViewers.length > 0 ? campaignAllViewers.length : (vData.count || 0),
+    campaignSessions,
+    campaignAllViewers: campaignAllViewers.length > 0 ? campaignAllViewers : (vData.viewers || [])
   });
+});
+
+// Force-Sync Viewers across all Sessions & History Items
+app.post('/api/live-statuses/sync-viewers', async (req, res) => {
+  try {
+    await refreshContactsCache();
+    let totalUpdated = 0;
+
+    for (const key in statusViewersStore.data) {
+      const record = statusViewersStore.data[key];
+      if (record && Array.isArray(record.viewers)) {
+        for (const v of record.viewers) {
+          const isLid = (v.jid && v.jid.includes('@lid')) || (v.phone && v.phone.length > 12 && !v.phone.startsWith('91'));
+          const isMissingName = !v.name || v.name.startsWith('+') || v.name === 'WhatsApp Contact' || (v.phone && v.name.includes(v.phone));
+          if (isLid || isMissingName) {
+            const resolved = await resolveContact(v.jid, v.sessionId);
+            if (resolved && resolved.phone) {
+              v.phone = resolved.phone;
+              v.name = resolved.name || formatPhone(resolved.phone);
+              totalUpdated++;
+            }
+          }
+        }
+      }
+    }
+    statusViewersStore.save();
+    return res.json({ success: true, updatedCount: totalUpdated, statusKeysCount: Object.keys(statusViewersStore.data).length });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // 5. Broadcast / Push / Schedule
@@ -2050,9 +2260,38 @@ app.post('/api/broadcast', upload.single('media'), async (req, res) => {
 // 6. History Management
 app.get('/api/history', (req, res) => {
   const stats = historyStore.getStats();
+
+  const enrichedItems = historyStore.items.map(item => {
+    const sessionResults = (item.sessionResults || []).map(sr => {
+      const vData = sr.statusId ? statusViewersStore.getViewers(sr.statusId) : { count: 0, viewers: [] };
+      return {
+        ...sr,
+        viewersCount: vData.count || 0,
+        viewers: vData.viewers || [],
+        lastViewedAt: vData.lastViewedAt || null
+      };
+    });
+
+    const uniqueViewers = new Map();
+    for (const sr of sessionResults) {
+      for (const v of (sr.viewers || [])) {
+        const vKey = (v.phone && v.phone.length > 5) ? v.phone : (v.jid || v.name);
+        if (!uniqueViewers.has(vKey)) {
+          uniqueViewers.set(vKey, { ...v, seenVia: sr.name || sr.sessionId });
+        }
+      }
+    }
+
+    return {
+      ...item,
+      sessionResults,
+      campaignViewersCount: uniqueViewers.size
+    };
+  });
+
   res.json({
     stats,
-    items: historyStore.items
+    items: enrichedItems
   });
 });
 
