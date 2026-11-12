@@ -7,10 +7,28 @@ const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const qrcode = require('qrcode');
 
+// Load .env manually if present
+try {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx !== -1) {
+        const k = trimmed.slice(0, eqIdx).trim();
+        const v = trimmed.slice(eqIdx + 1).trim();
+        if (!process.env[k]) process.env[k] = v;
+      }
+    }
+  }
+} catch (_) {}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
-const OPENWA_BASE_URL = process.env.OPENWA_BASE_URL || 'http://openwa-api:2785';
-const OPENWA_API_KEY = process.env.OPENWA_API_KEY || 'trust-me-bro-this-is-ultra-secure-key';
+const OPENWA_BASE_URL = process.env.OPENWA_BASE_URL || 'http://localhost:2785';
+const OPENWA_API_KEY = process.env.OPENWA_API_KEY || 'owa_k1_8b8333ea3cb9c88276c2995df17bdd2bfeb214b46241c6b77308ed543e0d8879';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'uploads');
@@ -685,16 +703,19 @@ async function resolveContact(participantJid, sessionId) {
           const phone = String(data.phone).replace(/\D/g, '');
           let name = contactsCache.get(phone) || '';
           if (!name) {
-            try {
-              const cRes = await openwaFetch(`/api/sessions/${sid}/contacts/${phone}@c.us`);
-              if (cRes.ok) {
-                const cData = await cRes.json();
-                if (cData && cData.name) {
-                  name = cData.name;
-                  contactsCache.set(phone, name);
+            for (const sid2 of candidateSessions) {
+              try {
+                const cRes = await openwaFetch(`/api/sessions/${sid2}/contacts/${phone}@c.us`);
+                if (cRes.ok) {
+                  const cData = await cRes.json();
+                  if (cData && cData.name) {
+                    name = cData.name;
+                    contactsCache.set(phone, name);
+                    break;
+                  }
                 }
-              }
-            } catch (_) {}
+              } catch (_) {}
+            }
           }
           const result = { phone, name: name || formatPhone(phone) };
           lidResolutionCache.set(participantJid, result);
@@ -1785,13 +1806,24 @@ app.post('/api/live-statuses/clear-all', async (req, res) => {
 app.get('/api/live-statuses/:statusId/viewers', async (req, res) => {
   const { statusId } = req.params;
   const vData = statusViewersStore.getViewers(statusId);
+
+  // Identify owner session for this status if available
+  let ownerSessionId = null;
+  for (const hItem of historyStore.items) {
+    const matchSr = (hItem.sessionResults || []).find(sr => sr.statusId === statusId);
+    if (matchSr && matchSr.sessionId) {
+      ownerSessionId = matchSr.sessionId;
+      break;
+    }
+  }
+
   if (vData && Array.isArray(vData.viewers)) {
     let modified = false;
     for (const v of vData.viewers) {
       const isLid = (v.jid && v.jid.includes('@lid')) || (v.phone && v.phone.length > 12 && !v.phone.startsWith('91'));
-      const isMissingName = !v.name || v.name.startsWith('+') || v.name === 'WhatsApp Contact';
-      if (isLid && isMissingName) {
-        const resolved = await resolveContact(v.jid);
+      const isMissingName = !v.name || v.name.startsWith('+') || v.name === 'WhatsApp Contact' || (v.phone && v.name.includes(v.phone));
+      if (isLid || isMissingName) {
+        const resolved = await resolveContact(v.jid, ownerSessionId);
         if (resolved && resolved.phone) {
           v.phone = resolved.phone;
           v.name = resolved.name || formatPhone(resolved.phone);
