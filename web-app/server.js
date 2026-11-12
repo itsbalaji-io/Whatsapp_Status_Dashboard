@@ -1144,6 +1144,26 @@ app.get('/api/media-proxy', async (req, res) => {
   try {
     const mediaPath = req.query.url;
     if (!mediaPath) return res.status(400).send('Missing url parameter');
+
+    // Serve local upload files directly
+    if (mediaPath.startsWith('/uploads/') || mediaPath.startsWith('uploads/')) {
+      const fileName = path.basename(mediaPath);
+      const localFile = path.join(UPLOADS_DIR, fileName);
+      if (fs.existsSync(localFile)) {
+        const ext = path.extname(localFile).toLowerCase();
+        let ct = 'image/jpeg';
+        if (ext === '.png') ct = 'image/png';
+        else if (ext === '.webp') ct = 'image/webp';
+        else if (ext === '.gif') ct = 'image/gif';
+        else if (ext === '.mp4') ct = 'video/mp4';
+        else if (ext === '.mov') ct = 'video/quicktime';
+        res.setHeader('Content-Type', ct);
+        res.setHeader('Content-Disposition', 'inline');
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        return res.sendFile(localFile);
+      }
+    }
+
     const targetUrl = mediaPath.startsWith('http') ? mediaPath : `${OPENWA_BASE_URL}${mediaPath}`;
 
     // Check memory cache
@@ -1186,9 +1206,11 @@ app.get('/api/live-statuses', async (req, res) => {
     const sessions = await sRes.json();
     const readySessions = sessions.filter(s => s.status === 'ready' && s.phone);
 
-    // Map phone numbers to sessions
+    // Map sessions by id and phone numbers
+    const sessionsMap = {};
     const phoneToSession = {};
     for (const s of sessions) {
+      sessionsMap[s.id] = s;
       if (s.phone) phoneToSession[s.phone.replace(/\D/g, '')] = s;
     }
 
@@ -1196,7 +1218,70 @@ app.get('/api/live-statuses', async (req, res) => {
     const allResults = [];
     const now = Date.now();
 
-    // Bounded concurrency pool of 3
+    // 1. First, harvest active stories posted via Dashboard that are still within their 24h/flash window
+    for (const hItem of historyStore.items) {
+      if (!hItem.sessionResults || !Array.isArray(hItem.sessionResults)) continue;
+
+      for (const sr of hItem.sessionResults) {
+        if (sr.status !== 'passed' || sr.revokedAt) continue;
+        const statusId = sr.statusId;
+        if (!statusId || seenIds.has(statusId) || removedStatusStore.has(statusId)) continue;
+
+        const targetSession = sessionsMap[sr.sessionId] || {
+          id: sr.sessionId,
+          name: sr.name || sr.sessionId,
+          phone: sr.phone || '',
+          pushName: sr.name
+        };
+
+        const postTime = sr.postTimestamp ? new Date(sr.postTimestamp) : new Date(hItem.createdAt);
+        const expiresAt = sr.autoExpireAt
+          ? new Date(sr.autoExpireAt)
+          : hItem.autoExpireAt
+          ? new Date(hItem.autoExpireAt)
+          : new Date(postTime.getTime() + 24 * 3600 * 1000);
+
+        // Exclude expired
+        if (expiresAt.getTime() < now) continue;
+
+        seenIds.add(statusId);
+
+        const ext = (hItem.filePath || '').toLowerCase();
+        const type = (ext.endsWith('.mp4') || ext.endsWith('.mov')) ? 'video' : 'image';
+        const caption = hItem.caption || '';
+        const mediaUrl = hItem.filePath ? `/uploads/${path.basename(hItem.filePath)}` : (hItem.mediaUrl || null);
+        const origin = '🖥️ Desktop';
+        const dupKey = extractRouteFingerprint(caption);
+        const vData = statusViewersStore.getViewers(statusId);
+        const matchedAutoExpire = sr.autoExpireAt || hItem.autoExpireAt || null;
+
+        allResults.push({
+          id: statusId,
+          sessionId: targetSession.id,
+          sessionName: targetSession.name,
+          phone: targetSession.phone,
+          pushName: targetSession.pushName || targetSession.name,
+          type,
+          caption,
+          mediaUrl,
+          timestamp: postTime.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          origin,
+          duplicateKey: dupKey,
+          cleanSummary: cleanSummary(caption, type),
+          isDuplicate: false,
+          duplicateRepeatCount: 1,
+          postedByThisDashboard: true,
+          viewersCount: vData.count || 0,
+          viewers: vData.viewers || [],
+          lastViewedAt: vData.lastViewedAt || null,
+          autoExpireAt: matchedAutoExpire,
+          isFlashSale: !!matchedAutoExpire
+        });
+      }
+    }
+
+    // 2. Query OpenWA for live stories on WhatsApp (including staff mobile phone posts)
     const concurrency = 3;
     for (let i = 0; i < readySessions.length; i += concurrency) {
       const chunk = readySessions.slice(i, i + concurrency);
@@ -1214,8 +1299,13 @@ app.get('/api/live-statuses', async (req, res) => {
 
               const contact = st.contact || {};
               const contactPhone = (contact.id || '').replace(/\D/g, '');
-              const matchedSession = phoneToSession[contactPhone];
-              const postedByUs = wasStatusPostedByDashboard(s.id, statusId);
+              let matchedSession = phoneToSession[contactPhone];
+              if (!matchedSession && contactPhone && s.phone && contactPhone === s.phone.replace(/\D/g, '')) {
+                matchedSession = s;
+              }
+
+              const postedByUs = wasStatusPostedByDashboard(s.id, statusId) ||
+                historyStore.items.some(h => (h.sessionResults || []).some(sr => sr.statusId === statusId));
 
               // ONLY show statuses belonging to connected session devices (ignore external contacts)
               if (!matchedSession && !postedByUs) {
@@ -1234,7 +1324,7 @@ app.get('/api/live-statuses', async (req, res) => {
               // Exclude expired
               if (expiresAt.getTime() < now) continue;
 
-              const origin = statusId.startsWith('3EB0') ? '🖥️ Desktop' : '📱 Phone';
+              const origin = (statusId.startsWith('3EB0') || postedByUs) ? '🖥️ Desktop' : '📱 Phone';
               const dupKey = extractRouteFingerprint(caption);
               const vData = statusViewersStore.getViewers(statusId);
 
