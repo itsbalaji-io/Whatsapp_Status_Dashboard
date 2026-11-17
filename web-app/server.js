@@ -1351,7 +1351,7 @@ app.get('/api/media-proxy', async (req, res) => {
         res.setHeader('Content-Type', ct);
         res.setHeader('Content-Disposition', 'inline');
         res.setHeader('Cache-Control', 'public, max-age=3600');
-        return res.sendFile(localFile);
+        return res.sendFile(path.resolve(localFile));
       }
     }
 
